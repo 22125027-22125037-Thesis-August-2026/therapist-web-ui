@@ -5,4 +5,4 @@ dist
 *.log
 .env
 .env.local
-I have some questions.txt
+/ignored claude chats
