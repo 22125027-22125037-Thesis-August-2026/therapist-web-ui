@@ -5,6 +5,7 @@ import {
   CalendarClock,
   CheckCircle2,
   ClipboardList,
+  Loader2,
   MessageCircle,
   Star,
   Video,
@@ -25,9 +26,29 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { AppointmentStatusBadge } from "@/components/StatusBadge";
 import { initials } from "@/lib/utils";
-import { mockAppointments, mockDiary, mockNotes, mockPatients } from "@/lib/mockData";
+import {
+  fetchTherapistAppointments,
+  type AppointmentRow,
+} from "@/lib/api/therapistAppointments";
+import { getProfileSummary, type ProfileSummary } from "@/lib/api/auth";
+import { listDiary, type DiaryEntryResponse } from "@/lib/api/tracking";
+import {
+  getClinicalNoteByAppointment,
+  type ClinicalNoteResponse,
+} from "@/lib/api/therapist";
+import { ApiError } from "@/lib/api/http";
+import type { AppointmentStatus } from "@/types";
 
 const TEN_MINUTES_MS = 10 * 60 * 1000;
+
+const statusMap: Record<string, AppointmentStatus> = {
+  REQUESTED: "REQUESTED",
+  UPCOMING: "CONFIRMED",
+  IN_PROGRESS: "IN_PROGRESS",
+  COMPLETED: "COMPLETED",
+  CANCELLED: "CANCELLED",
+  NO_SHOW: "NO_SHOW",
+};
 
 export function AppointmentDetailPage() {
   const { id } = useParams();
@@ -35,24 +56,61 @@ export function AppointmentDetailPage() {
   const [cancelOpen, setCancelOpen] = React.useState(false);
   const [cancelReason, setCancelReason] = React.useState("");
 
-  const appt = mockAppointments.find((a) => a.id === id);
+  const [appt, setAppt] = React.useState<AppointmentRow | null>(null);
+  const [patient, setPatient] = React.useState<ProfileSummary | null>(null);
+  const [diary, setDiary] = React.useState<DiaryEntryResponse[]>([]);
+  const [note, setNote] = React.useState<ClinicalNoteResponse | null>(null);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    setLoading(true);
+    fetchTherapistAppointments()
+      .then(async ({ appointments }) => {
+        const a = appointments.find((x) => x.appointmentId === id);
+        if (!a) return;
+        if (cancelled) return;
+        setAppt(a);
+        const [profileR, diaryR, noteR] = await Promise.allSettled([
+          getProfileSummary(a.patientId),
+          listDiary(a.patientId),
+          getClinicalNoteByAppointment(a.appointmentId),
+        ]);
+        if (cancelled) return;
+        if (profileR.status === "fulfilled") setPatient(profileR.value);
+        if (diaryR.status === "fulfilled") setDiary(diaryR.value.slice(0, 5));
+        if (noteR.status === "fulfilled") setNote(noteR.value);
+      })
+      .catch((err) => {
+        if (err instanceof ApiError) console.warn("Appointment load failed", err.status);
+      })
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin" />
+      </div>
+    );
+  }
+
   if (!appt) {
     return <p className="p-6 text-muted-foreground">Appointment not found.</p>;
   }
 
-  const patient = mockPatients.find((p) => p.id === appt.patientId);
-  const note = mockNotes.find((n) => n.appointmentId === appt.id);
-  const start = parseISO(appt.startsAt);
-  const end = parseISO(appt.endsAt);
+  const start = parseISO(appt.startDatetime);
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
   const now = new Date();
   const inJoinWindow =
     now.getTime() >= start.getTime() - TEN_MINUTES_MS && now.getTime() <= end.getTime();
   const isUpcoming = !isPast(start);
   const minutesToStart = differenceInMinutes(start, now);
-
-  const recentDiary = mockDiary
-    .filter((d) => d.patientId === appt.patientId)
-    .slice(0, 5);
+  const uiStatus = statusMap[appt.status] ?? "CONFIRMED";
 
   return (
     <div className="space-y-6">
@@ -66,7 +124,7 @@ export function AppointmentDetailPage() {
             {format(start, "EEEE, d LLLL yyyy 'at' HH:mm")} ({appt.mode})
           </p>
         </div>
-        <AppointmentStatusBadge status={appt.status} />
+        <AppointmentStatusBadge status={uiStatus} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -77,17 +135,13 @@ export function AppointmentDetailPage() {
             </CardHeader>
             <CardContent className="grid gap-3 text-sm md:grid-cols-2">
               <InfoRow icon={CalendarClock} label="Starts" value={format(start, "PP HH:mm")} />
-              <InfoRow icon={CalendarClock} label="Ends" value={format(end, "PP HH:mm")} />
+              <InfoRow icon={CalendarClock} label="Ends (≈)" value={format(end, "PP HH:mm")} />
               <InfoRow
                 icon={appt.mode === "VIDEO" ? Video : MessageCircle}
                 label="Mode"
                 value={appt.mode}
               />
               <InfoRow icon={ClipboardList} label="Slot ID" value={appt.slotId} />
-              <div className="md:col-span-2">
-                <p className="text-xs uppercase text-muted-foreground">Patient's stated reason</p>
-                <p className="mt-1">{appt.reason}</p>
-              </div>
             </CardContent>
           </Card>
 
@@ -110,22 +164,22 @@ export function AppointmentDetailPage() {
             </Card>
           )}
 
-          {isUpcoming && recentDiary.length > 0 && (
+          {isUpcoming && diary.length > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle>Patient's recent diary (last 5)</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {recentDiary.map((d) => (
+                {diary.map((d) => (
                   <div key={d.id} className="rounded-md border p-3 text-sm">
                     <div className="flex items-center justify-between">
-                      <p className="font-medium">{d.title}</p>
-                      <Badge variant="muted">{d.mood}</Badge>
+                      <p className="font-medium">{d.title ?? "Diary entry"}</p>
+                      {d.moodTag && <Badge variant="muted">{d.moodTag}</Badge>}
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {format(parseISO(d.createdAt), "PP")}
                     </p>
-                    <p className="mt-1 text-sm text-muted-foreground">{d.body}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">{d.content}</p>
                   </div>
                 ))}
               </CardContent>
@@ -142,26 +196,25 @@ export function AppointmentDetailPage() {
                   <span>Clinical note</span>
                   {note ? (
                     <Button asChild size="sm" variant="outline">
-                      <Link to={`/clinical-notes/${note.id}`}>
-                        Open ({note.status === "DRAFT" ? "draft" : "finalized"})
+                      <Link to={`/clinical-notes/${appt.appointmentId}`}>
+                        Open
                       </Link>
                     </Button>
                   ) : (
                     <Button asChild size="sm">
-                      <Link to={`/clinical-notes/new?appointmentId=${appt.id}`}>
+                      <Link to={`/clinical-notes/new?appointmentId=${appt.appointmentId}`}>
                         Write clinical note
                       </Link>
                     </Button>
                   )}
                 </div>
-                <div className="rounded-md border p-3 text-sm">
+                <div className="rounded-md border p-3 text-sm text-muted-foreground">
                   <div className="flex items-center gap-2">
                     <Star className="h-4 w-4 text-warning" />
-                    <span className="font-medium">Patient's review: 5 / 5</span>
+                    <span className="font-medium text-foreground">
+                      Patient reviews are visible on your therapist profile page.
+                    </span>
                   </div>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    "Doctor really listened. The breathing exercise helped me sleep."
-                  </p>
                 </div>
               </CardContent>
             </Card>
@@ -174,31 +227,22 @@ export function AppointmentDetailPage() {
               <CardTitle>Patient</CardTitle>
             </CardHeader>
             <CardContent>
-              {patient && (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-3">
-                    <Avatar className="h-12 w-12">
-                      <AvatarFallback>{initials(patient.fullName)}</AvatarFallback>
-                    </Avatar>
-                    <div>
-                      <p className="font-medium">{patient.fullName}</p>
-                      <p className="text-xs text-muted-foreground">
-                        Age {patient.age} · {patient.gender.toLowerCase()}
-                      </p>
-                    </div>
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <Avatar className="h-12 w-12">
+                    <AvatarFallback>{initials(appt.patientName)}</AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <p className="font-medium">{appt.patientName}</p>
+                    {patient?.email && (
+                      <p className="text-xs text-muted-foreground">{patient.email}</p>
+                    )}
                   </div>
-                  <div className="flex flex-wrap gap-1">
-                    {patient.tags.map((t) => (
-                      <Badge key={t} variant="secondary">
-                        {t}
-                      </Badge>
-                    ))}
-                  </div>
-                  <Button asChild variant="outline" size="sm" className="w-full">
-                    <Link to={`/patients/${patient.id}`}>View full profile</Link>
-                  </Button>
                 </div>
-              )}
+                <Button asChild variant="outline" size="sm" className="w-full">
+                  <Link to={`/patients/${appt.patientId}`}>View full profile</Link>
+                </Button>
+              </div>
             </CardContent>
           </Card>
 
@@ -211,7 +255,7 @@ export function AppointmentDetailPage() {
                 <Button
                   className="w-full"
                   disabled={!inJoinWindow}
-                  onClick={() => navigate(`/appointments/${appt.id}/video`)}
+                  onClick={() => navigate(`/appointments/${appt.appointmentId}/video`)}
                 >
                   <Video className="h-4 w-4" />
                   {inJoinWindow
@@ -221,7 +265,7 @@ export function AppointmentDetailPage() {
               )}
               {isUpcoming && appt.mode === "CHAT" && (
                 <Button asChild className="w-full">
-                  <Link to={`/messages?channel=c_${appt.patientId}`}>
+                  <Link to={`/messages?patient=${appt.patientId}`}>
                     <MessageCircle className="h-4 w-4" /> Open chat
                   </Link>
                 </Button>

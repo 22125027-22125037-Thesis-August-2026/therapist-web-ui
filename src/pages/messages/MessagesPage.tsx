@@ -1,49 +1,154 @@
 import * as React from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
-import { CalendarPlus, Paperclip, Send, Sparkles, Wind } from "lucide-react";
+import { Loader2, Paperclip, Send } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { PermissionBadge } from "@/components/PermissionBadge";
 import { initials } from "@/lib/utils";
-import { mockChannels, mockMessages, mockPatients } from "@/lib/mockData";
-import type { ChatMessage } from "@/types";
+import { useAuth } from "@/context/AuthContext";
+import {
+  listChannels,
+  listChannelMessages,
+  listIncomingFriendRequests,
+  acceptFriendRequest,
+  rejectFriendRequest,
+  type ChannelItem,
+  type ChannelMessage,
+  type FriendRequestItem,
+} from "@/lib/api/social";
+import { getGrantStatus } from "@/lib/api/auth";
 
 export function MessagesPage() {
+  const { user } = useAuth();
   const [params, setParams] = useSearchParams();
-  const initialChannel = params.get("channel") ?? mockChannels[0]?.id ?? null;
-  const [activeId, setActiveId] = React.useState<string | null>(initialChannel);
+  const [channels, setChannels] = React.useState<ChannelItem[]>([]);
+  const [activeId, setActiveId] = React.useState<string | null>(
+    params.get("channel") ?? null,
+  );
   const [tab, setTab] = React.useState("patients");
   const [search, setSearch] = React.useState("");
-  const [messages, setMessages] = React.useState<Record<string, ChatMessage[]>>(mockMessages);
+  const [messages, setMessages] = React.useState<Record<string, ChannelMessage[]>>({});
   const [draft, setDraft] = React.useState("");
+  const [requests, setRequests] = React.useState<FriendRequestItem[]>([]);
+  const [grantInfo, setGrantInfo] = React.useState<{
+    granted: boolean;
+    expiresAt?: string;
+  } | null>(null);
+  const [loadingChannels, setLoadingChannels] = React.useState(true);
+  const [loadingMessages, setLoadingMessages] = React.useState(false);
 
-  const channel = mockChannels.find((c) => c.id === activeId);
-  const patient = channel ? mockPatients.find((p) => p.id === channel.patientId) : undefined;
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoadingChannels(true);
+    listChannels()
+      .then((list) => {
+        if (cancelled) return;
+        setChannels(list ?? []);
+        if (!activeId && list && list[0]) {
+          setActiveId(list[0].channelId);
+        }
+      })
+      .catch(() => !cancelled && setChannels([]))
+      .finally(() => !cancelled && setLoadingChannels(false));
+
+    listIncomingFriendRequests(0, 20)
+      .then((page) => !cancelled && setRequests(page.content ?? []))
+      .catch(() => !cancelled && setRequests([]));
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!activeId) return;
+    let cancelled = false;
+    setLoadingMessages(true);
+    listChannelMessages(activeId, 0, 50)
+      .then((page) => {
+        if (cancelled) return;
+        // API returns newest first; reverse for chronological display
+        const sorted = [...(page.content ?? [])].reverse();
+        setMessages((s) => ({ ...s, [activeId]: sorted }));
+      })
+      .catch(() => !cancelled && setMessages((s) => ({ ...s, [activeId]: [] })))
+      .finally(() => !cancelled && setLoadingMessages(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId]);
+
+  const channel = channels.find((c) => c.channelId === activeId);
+
+  React.useEffect(() => {
+    if (!channel) {
+      setGrantInfo(null);
+      return;
+    }
+    let cancelled = false;
+    getGrantStatus(channel.counterpartProfileId)
+      .then((res) => {
+        if (cancelled) return;
+        setGrantInfo({
+          granted: !!res.data?.theyGaveMeAccess,
+          expiresAt: res.data?.theirGrant?.expiresAt,
+        });
+      })
+      .catch(() => !cancelled && setGrantInfo(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [channel?.counterpartProfileId]);
+
   const msgs = activeId ? messages[activeId] ?? [] : [];
 
-  const filteredChannels = mockChannels.filter((c) =>
-    search ? c.patientName.toLowerCase().includes(search.toLowerCase()) : true,
+  const filteredChannels = channels.filter((c) =>
+    search
+      ? (c.counterpartDisplayName ?? c.counterpartProfilename)
+          .toLowerCase()
+          .includes(search.toLowerCase())
+      : true,
   );
 
   const send = () => {
-    if (!draft.trim() || !activeId) return;
-    const next: ChatMessage = {
-      id: `m_${Date.now()}`,
+    if (!draft.trim() || !activeId || !channel || !user) return;
+    // WebSocket (STOMP) is the canonical send path per docs; the REST API doesn't
+    // expose a send endpoint. We optimistically render the outgoing message and
+    // leave WebSocket plumbing as a follow-up.
+    const next: ChannelMessage = {
+      id: `local_${Date.now()}`,
       channelId: activeId,
-      senderId: "th_1",
-      senderName: "Therapist",
-      fromMe: true,
-      body: draft.trim(),
+      senderId: user.id,
+      senderProfilename: user.fullName,
+      content: draft.trim(),
+      read: false,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
     setMessages((s) => ({ ...s, [activeId]: [...(s[activeId] ?? []), next] }));
     setDraft("");
+  };
+
+  const handleAccept = async (id: string) => {
+    try {
+      await acceptFriendRequest(id);
+      setRequests((curr) => curr.filter((r) => r.id !== id));
+    } catch {
+      // ignore
+    }
+  };
+  const handleReject = async (id: string) => {
+    try {
+      await rejectFriendRequest(id);
+      setRequests((curr) => curr.filter((r) => r.id !== id));
+    } catch {
+      // ignore
+    }
   };
 
   return (
@@ -58,32 +163,50 @@ export function MessagesPage() {
           <Tabs value={tab} onValueChange={setTab} className="mt-3">
             <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="patients">Patients</TabsTrigger>
-              <TabsTrigger value="requests">Requests</TabsTrigger>
+              <TabsTrigger value="requests">
+                Requests {requests.length > 0 && `(${requests.length})`}
+              </TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
         <div className="flex-1 overflow-y-auto scrollbar-thin">
+          {tab === "patients" && loadingChannels && (
+            <div className="flex items-center justify-center py-8 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+            </div>
+          )}
+          {tab === "patients" && !loadingChannels && filteredChannels.length === 0 && (
+            <p className="p-4 text-sm text-muted-foreground">No conversations yet.</p>
+          )}
           {tab === "patients" &&
             filteredChannels.map((c) => (
               <button
-                key={c.id}
+                key={c.channelId}
                 onClick={() => {
-                  setActiveId(c.id);
-                  setParams({ channel: c.id });
+                  setActiveId(c.channelId);
+                  setParams({ channel: c.channelId });
                 }}
                 className={`flex w-full items-center gap-3 border-b p-3 text-left text-sm transition-colors hover:bg-muted/50 ${
-                  activeId === c.id ? "bg-accent" : ""
+                  activeId === c.channelId ? "bg-accent" : ""
                 }`}
               >
                 <Avatar>
-                  <AvatarFallback>{initials(c.patientName)}</AvatarFallback>
+                  {c.counterpartAvatarUrl && (
+                    <AvatarImage src={c.counterpartAvatarUrl} alt="" />
+                  )}
+                  <AvatarFallback>
+                    {initials(c.counterpartDisplayName ?? c.counterpartProfilename)}
+                  </AvatarFallback>
                 </Avatar>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between">
-                    <p className="truncate font-medium">{c.patientName}</p>
-                    <PermissionBadge granted={c.permissionGranted} />
+                    <p className="truncate font-medium">
+                      {c.counterpartDisplayName ?? c.counterpartProfilename}
+                    </p>
                   </div>
-                  <p className="truncate text-xs text-muted-foreground">{c.lastMessage}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {c.lastMessagePreview ?? "No messages yet."}
+                  </p>
                 </div>
                 {c.unreadCount > 0 && (
                   <Badge variant="default" className="shrink-0">
@@ -94,18 +217,30 @@ export function MessagesPage() {
             ))}
 
           {tab === "requests" && (
-            <div className="p-4 text-sm text-muted-foreground">
-              <p>2 incoming requests</p>
-              <Card className="mt-2 p-3 text-foreground">
-                <p className="font-medium">Phạm Thiên Kim</p>
-                <p className="text-xs text-muted-foreground">Wants to start consulting.</p>
-                <div className="mt-2 flex gap-2">
-                  <Button size="sm">Accept</Button>
-                  <Button size="sm" variant="ghost">
-                    Decline
-                  </Button>
-                </div>
-              </Card>
+            <div className="space-y-2 p-3 text-sm">
+              {requests.length === 0 && (
+                <p className="text-muted-foreground">No incoming requests.</p>
+              )}
+              {requests.map((r) => (
+                <Card key={r.id} className="p-3">
+                  <p className="font-medium">{r.senderProfilename}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Wants to connect — {format(parseISO(r.createdAt), "PP")}
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Button size="sm" onClick={() => handleAccept(r.id)}>
+                      Accept
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => handleReject(r.id)}
+                    >
+                      Decline
+                    </Button>
+                  </div>
+                </Card>
+              ))}
             </div>
           )}
         </div>
@@ -121,61 +256,66 @@ export function MessagesPage() {
             <div className="flex items-center justify-between border-b p-3">
               <div className="flex items-center gap-3">
                 <Avatar>
-                  <AvatarFallback>{initials(channel.patientName)}</AvatarFallback>
+                  {channel.counterpartAvatarUrl && (
+                    <AvatarImage src={channel.counterpartAvatarUrl} alt="" />
+                  )}
+                  <AvatarFallback>
+                    {initials(channel.counterpartDisplayName ?? channel.counterpartProfilename)}
+                  </AvatarFallback>
                 </Avatar>
                 <div>
-                  <p className="text-sm font-medium">{channel.patientName}</p>
-                  <p className="text-xs text-muted-foreground">Last seen recently</p>
+                  <p className="text-sm font-medium">
+                    {channel.counterpartDisplayName ?? channel.counterpartProfilename}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {channel.lastMessageAt
+                      ? `Last message ${format(parseISO(channel.lastMessageAt), "PP HH:mm")}`
+                      : "No messages yet"}
+                  </p>
                 </div>
               </div>
               <Button asChild size="sm" variant="outline">
-                <Link to={`/patients/${channel.patientId}`}>View profile</Link>
+                <Link to={`/patients/${channel.counterpartProfileId}`}>View profile</Link>
               </Button>
             </div>
 
             <div className="flex-1 space-y-3 overflow-y-auto scrollbar-thin bg-muted/20 p-4">
-              {msgs.length === 0 && (
+              {loadingMessages && (
+                <div className="flex items-center justify-center py-6 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                </div>
+              )}
+              {!loadingMessages && msgs.length === 0 && (
                 <p className="text-center text-xs text-muted-foreground">
                   No messages yet — say hello.
                 </p>
               )}
-              {msgs.map((m) => (
-                <div
-                  key={m.id}
-                  className={`flex ${m.fromMe ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[70%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
-                      m.fromMe
-                        ? "rounded-br-sm bg-primary text-primary-foreground"
-                        : "rounded-bl-sm bg-card"
-                    }`}
-                  >
-                    <p>{m.body}</p>
-                    <p
-                      className={`mt-1 text-[10px] ${
-                        m.fromMe ? "text-primary-foreground/70" : "text-muted-foreground"
+              {msgs.map((m) => {
+                const fromMe = m.senderId === user?.id;
+                return (
+                  <div key={m.id} className={`flex ${fromMe ? "justify-end" : "justify-start"}`}>
+                    <div
+                      className={`max-w-[70%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
+                        fromMe
+                          ? "rounded-br-sm bg-primary text-primary-foreground"
+                          : "rounded-bl-sm bg-card"
                       }`}
                     >
-                      {format(parseISO(m.createdAt), "HH:mm")}
-                    </p>
+                      <p>{m.content}</p>
+                      <p
+                        className={`mt-1 text-[10px] ${
+                          fromMe ? "text-primary-foreground/70" : "text-muted-foreground"
+                        }`}
+                      >
+                        {format(parseISO(m.createdAt), "HH:mm")}
+                      </p>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="border-t p-3">
-              <div className="mb-2 flex flex-wrap gap-2">
-                <Button size="sm" variant="outline">
-                  <CalendarPlus className="h-3.5 w-3.5" /> Send slot
-                </Button>
-                <Button size="sm" variant="outline">
-                  <Wind className="h-3.5 w-3.5" /> Send breathing exercise
-                </Button>
-                <Button size="sm" variant="outline">
-                  <Sparkles className="h-3.5 w-3.5" /> Mood-check prompt
-                </Button>
-              </div>
               <div className="flex items-end gap-2">
                 <Button variant="ghost" size="icon" aria-label="Attach">
                   <Paperclip className="h-4 w-4" />
@@ -197,48 +337,52 @@ export function MessagesPage() {
                   <Send className="h-4 w-4" />
                 </Button>
               </div>
+              <p className="mt-2 text-[10px] text-muted-foreground">
+                Sending uses the social service WebSocket (STOMP) endpoint; a REST send endpoint is
+                not exposed. Outgoing messages render locally until the WebSocket integration is
+                wired up.
+              </p>
             </div>
           </>
         )}
       </Card>
 
       <Card className="overflow-y-auto scrollbar-thin p-4">
-        {patient ? (
+        {channel ? (
           <div className="space-y-4 text-sm">
             <h3 className="text-base font-semibold">Permission</h3>
-            {patient.permission.theyGaveMeAccess ? (
+            {grantInfo?.granted ? (
               <div className="rounded-md border border-success/40 bg-success/5 p-3">
                 <p className="text-sm font-medium text-success">
-                  Data access granted{" "}
-                  {patient.permission.expiresAt && `until ${format(parseISO(patient.permission.expiresAt), "PP")}`}
+                  Data access granted
+                  {grantInfo.expiresAt && ` until ${format(parseISO(grantInfo.expiresAt), "PP")}`}
                 </p>
                 <Button asChild variant="link" size="sm" className="mt-1 h-auto p-0 text-success">
-                  <Link to={`/patients/${patient.id}`}>View their tracking data →</Link>
+                  <Link to={`/patients/${channel.counterpartProfileId}`}>
+                    View their tracking data →
+                  </Link>
                 </Button>
               </div>
             ) : (
               <div className="rounded-md border bg-muted/30 p-3">
                 <p className="text-sm">Data access not granted.</p>
-                <Button size="sm" className="mt-2">
-                  Request access
-                </Button>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  The patient grants access from their mobile app.
+                </p>
               </div>
             )}
-
-            <div>
-              <h4 className="text-xs uppercase tracking-wide text-muted-foreground">
-                Grant history
-              </h4>
-              <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                <li>15/03/2026 — Patient granted READ_ALL</li>
-                <li>01/01/2026 — Therapist requested access</li>
-              </ul>
-            </div>
 
             <div className="rounded-md border p-3 text-xs text-muted-foreground">
               Note: chat permission is separate from health-data permission. Patients may message
               you even without granting access to their diary / mood / sleep.
             </div>
+
+            {channel.moodAlert && (
+              <div className="rounded-md border border-warning/40 bg-warning/5 p-3 text-xs">
+                <p className="font-medium text-warning">Mood alert</p>
+                <p className="text-muted-foreground">{channel.moodAlert}</p>
+              </div>
+            )}
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">No conversation selected.</p>

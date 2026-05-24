@@ -1,9 +1,8 @@
 import * as React from "react";
 import { addDays, addWeeks, format, isSameDay, parseISO, startOfWeek, subWeeks } from "date-fns";
-import { ChevronLeft, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Plus, Trash2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -13,16 +12,50 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { mockSlots } from "@/lib/mockData";
-import type { AvailabilitySlot } from "@/types";
+import { useAuth } from "@/context/AuthContext";
+import { getTherapistSlots, type SlotResponse } from "@/lib/api/therapist";
 
 const HOURS = Array.from({ length: 12 }, (_, i) => 8 + i);
 
+interface UISlot {
+  id: string;
+  startsAt: string;
+  endsAt: string;
+  isBooked: boolean;
+  bookedByPatientName?: string;
+}
+
 export function AvailabilityPage() {
+  const { user } = useAuth();
   const [weekStart, setWeekStart] = React.useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
-  const [slots, setSlots] = React.useState<AvailabilitySlot[]>(mockSlots);
-  const [editing, setEditing] = React.useState<AvailabilitySlot | null>(null);
+  const [slots, setSlots] = React.useState<UISlot[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [editing, setEditing] = React.useState<UISlot | null>(null);
   const [newSlotInfo, setNewSlotInfo] = React.useState<{ day: Date; hour: number } | null>(null);
+
+  React.useEffect(() => {
+    if (!user?.id) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    getTherapistSlots(user.id, { page: 0, size: 200, sort: "startDatetime,asc" })
+      .then((page) => {
+        if (cancelled) return;
+        const mapped: UISlot[] = (page.content ?? []).map((s: SlotResponse) => ({
+          id: s.slotId,
+          startsAt: s.startDatetime,
+          endsAt: s.endDatetime,
+          isBooked: false,
+        }));
+        setSlots(mapped);
+      })
+      .catch((e) => !cancelled && setError(e?.message ?? "Failed to load slots"))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
@@ -31,28 +64,6 @@ export function AvailabilityPage() {
       (s) =>
         isSameDay(parseISO(s.startsAt), day) && parseISO(s.startsAt).getHours() === hour,
     );
-
-  const addSlot = (day: Date, hour: number) => {
-    const start = new Date(day);
-    start.setHours(hour, 0, 0, 0);
-    const end = new Date(start);
-    end.setHours(hour + 1);
-    setSlots((s) => [
-      ...s,
-      {
-        id: `slot_new_${Date.now()}`,
-        startsAt: start.toISOString(),
-        endsAt: end.toISOString(),
-        isBooked: false,
-      },
-    ]);
-    setNewSlotInfo(null);
-  };
-
-  const removeSlot = (id: string) => {
-    setSlots((s) => s.filter((x) => x.id !== id));
-    setEditing(null);
-  };
 
   return (
     <div className="space-y-6">
@@ -79,98 +90,89 @@ export function AvailabilityPage() {
         </div>
       </div>
 
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
       <Card>
         <CardContent className="p-0">
-          <div className="overflow-x-auto scrollbar-thin">
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr>
-                  <th className="w-16 border-b bg-muted/50 p-2 text-xs uppercase text-muted-foreground"></th>
-                  {days.map((d) => (
-                    <th
-                      key={d.toISOString()}
-                      className="border-b bg-muted/50 p-2 text-xs uppercase text-muted-foreground"
-                    >
-                      <div>{format(d, "EEE")}</div>
-                      <div className="text-foreground">{format(d, "d LLL")}</div>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {HOURS.map((h) => (
-                  <tr key={h}>
-                    <td className="border-r border-b p-2 align-top text-xs text-muted-foreground">
-                      {String(h).padStart(2, "0")}:00
-                    </td>
-                    {days.map((d) => {
-                      const slot = cellSlot(d, h);
-                      return (
-                        <td
-                          key={d.toISOString() + h}
-                          className="h-14 border-b border-r p-1 align-top"
-                        >
-                          {slot ? (
-                            <button
-                              onClick={() => setEditing(slot)}
-                              className={`h-full w-full rounded-sm px-1.5 text-left text-xs font-medium ${
-                                slot.isBooked
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-success/15 text-success hover:bg-success/25"
-                              }`}
-                            >
-                              {slot.isBooked ? (
-                                <>
-                                  <div>{slot.bookedByPatientName ?? "Booked"}</div>
-                                  <div className="text-[10px] opacity-80">Booked</div>
-                                </>
-                              ) : (
-                                <>
-                                  <div>Available</div>
-                                  <div className="text-[10px] opacity-70">Click to edit</div>
-                                </>
-                              )}
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => setNewSlotInfo({ day: d, hour: h })}
-                              className="grid h-full w-full place-items-center rounded-sm text-muted-foreground/40 hover:bg-accent hover:text-primary"
-                              aria-label={`Add slot on ${format(d, "PP")} at ${h}:00`}
-                            >
-                              <Plus className="h-4 w-4" />
-                            </button>
-                          )}
-                        </td>
-                      );
-                    })}
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+            </div>
+          ) : (
+            <div className="overflow-x-auto scrollbar-thin">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr>
+                    <th className="w-16 border-b bg-muted/50 p-2 text-xs uppercase text-muted-foreground"></th>
+                    {days.map((d) => (
+                      <th
+                        key={d.toISOString()}
+                        className="border-b bg-muted/50 p-2 text-xs uppercase text-muted-foreground"
+                      >
+                        <div>{format(d, "EEE")}</div>
+                        <div className="text-foreground">{format(d, "d LLL")}</div>
+                      </th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {HOURS.map((h) => (
+                    <tr key={h}>
+                      <td className="border-r border-b p-2 align-top text-xs text-muted-foreground">
+                        {String(h).padStart(2, "0")}:00
+                      </td>
+                      {days.map((d) => {
+                        const slot = cellSlot(d, h);
+                        return (
+                          <td
+                            key={d.toISOString() + h}
+                            className="h-14 border-b border-r p-1 align-top"
+                          >
+                            {slot ? (
+                              <button
+                                onClick={() => setEditing(slot)}
+                                className="h-full w-full rounded-sm bg-success/15 px-1.5 text-left text-xs font-medium text-success hover:bg-success/25"
+                              >
+                                <div>Available</div>
+                                <div className="text-[10px] opacity-70">Click to view</div>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => setNewSlotInfo({ day: d, hour: h })}
+                                className="grid h-full w-full place-items-center rounded-sm text-muted-foreground/40 hover:bg-accent hover:text-primary"
+                                aria-label={`Add slot on ${format(d, "PP")} at ${h}:00`}
+                              >
+                                <Plus className="h-4 w-4" />
+                              </button>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </CardContent>
       </Card>
 
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <LegendDot className="bg-success/40" label="Available" />
-        <LegendDot className="bg-primary" label="Booked" />
         <span className="text-muted-foreground">
-          Tip: click an empty cell to add a slot, click an existing one to edit or delete.
+          Note: backend endpoints to create, update, or delete availability slots are not yet
+          implemented. See <code>docs/Missing API endpoints.md</code>.
         </span>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        <Button variant="outline" size="sm">Apply "Standard week" template</Button>
-        <Button variant="outline" size="sm">Save week as template</Button>
-        <Button variant="outline" size="sm">Toggle holiday for selected day</Button>
       </div>
 
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>
-              {editing?.isBooked ? "Booked slot" : "Available slot"}
-            </DialogTitle>
+            <DialogTitle>Available slot</DialogTitle>
           </DialogHeader>
           {editing && (
             <div className="space-y-3 text-sm">
@@ -179,26 +181,14 @@ export function AvailabilityPage() {
                 {format(parseISO(editing.startsAt), "HH:mm")}–
                 {format(parseISO(editing.endsAt), "HH:mm")}
               </p>
-              {editing.isBooked ? (
-                <p className="rounded-md border bg-muted p-2 text-muted-foreground">
-                  Patient: <span className="font-medium">{editing.bookedByPatientName}</span>.
-                  Booked slots cannot be edited.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  <Label>Make recurring</Label>
-                  <select className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm">
-                    <option value="">None</option>
-                    <option value="weekly-4">Weekly · 4 weeks</option>
-                    <option value="weekly-8">Weekly · 8 weeks</option>
-                  </select>
-                </div>
-              )}
+              <p className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+                Editing or deleting availability slots is not yet supported by the backend.
+              </p>
             </div>
           )}
           <DialogFooter>
-            {editing && !editing.isBooked && (
-              <Button variant="destructive" onClick={() => editing && removeSlot(editing.id)}>
+            {editing && (
+              <Button variant="destructive" disabled>
                 <Trash2 className="h-4 w-4" /> Delete slot
               </Button>
             )}
@@ -230,17 +220,18 @@ export function AvailabilityPage() {
                   <Input type="number" defaultValue={10} step={5} />
                 </div>
               </div>
+              <p className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+                Slot creation endpoint is not yet implemented. Use the
+                <code className="mx-1">POST /api/v1/test/trigger-generation</code>
+                test endpoint to populate slots in development.
+              </p>
             </div>
           )}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setNewSlotInfo(null)}>
               Cancel
             </Button>
-            <Button
-              onClick={() => newSlotInfo && addSlot(newSlotInfo.day, newSlotInfo.hour)}
-            >
-              Add slot
-            </Button>
+            <Button disabled>Add slot</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

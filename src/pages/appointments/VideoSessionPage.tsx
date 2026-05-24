@@ -1,19 +1,31 @@
 import * as React from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
-import { ArrowLeft, NotebookPen, PhoneOff } from "lucide-react";
+import { ArrowLeft, Loader2, NotebookPen, PhoneOff } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { mockAppointments, mockDiary } from "@/lib/mockData";
+import {
+  joinSession,
+  type JoinSessionResponse,
+} from "@/lib/api/therapist";
+import {
+  fetchTherapistAppointments,
+  type AppointmentRow,
+} from "@/lib/api/therapistAppointments";
+import { listDiary, type DiaryEntryResponse } from "@/lib/api/tracking";
 
 export function VideoSessionPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const appt = mockAppointments.find((a) => a.id === id);
+  const [appt, setAppt] = React.useState<AppointmentRow | null>(null);
+  const [join, setJoin] = React.useState<JoinSessionResponse | null>(null);
+  const [diary, setDiary] = React.useState<DiaryEntryResponse[]>([]);
   const [scratch, setScratch] = React.useState("");
   const [saved, setSaved] = React.useState<Date | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!scratch) return;
@@ -21,25 +33,80 @@ export function VideoSessionPage() {
     return () => clearTimeout(t);
   }, [scratch]);
 
+  React.useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const [{ appointments }, joinRes] = await Promise.all([
+          fetchTherapistAppointments(),
+          joinSession(id).catch((e) => {
+            throw e;
+          }),
+        ]);
+        const a = appointments.find((x) => x.appointmentId === id) ?? null;
+        if (cancelled) return;
+        setAppt(a);
+        setJoin(joinRes);
+        if (a) {
+          try {
+            const d = await listDiary(a.patientId);
+            if (!cancelled) setDiary(d.slice(0, 5));
+          } catch {
+            // permission may not be granted
+          }
+        }
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message ?? "Failed to start session");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="grid h-[calc(100vh-3rem)] place-items-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="grid h-[calc(100vh-3rem)] place-items-center text-sm text-destructive">
+        {error}
+      </div>
+    );
+  }
+
   if (!appt) return <p className="p-6">Appointment not found.</p>;
-  const recentDiary = mockDiary.filter((d) => d.patientId === appt.patientId).slice(0, 5);
-  const roomName = appt.videoRoomName ?? `umatter-${appt.id}`;
+
+  const meetingUrl = join?.meetingUrl;
 
   return (
     <div className="flex h-[calc(100vh-3rem)] flex-col">
       <div className="flex items-center justify-between border-b bg-card px-4 py-2">
         <Button variant="ghost" size="sm" asChild>
-          <Link to={`/appointments/${appt.id}`}>
+          <Link to={`/appointments/${appt.appointmentId}`}>
             <ArrowLeft className="h-4 w-4" /> Back to appointment
           </Link>
         </Button>
         <div className="text-sm text-muted-foreground">
-          {appt.patientName} · {format(parseISO(appt.startsAt), "HH:mm")} · room {roomName}
+          {appt.patientName} · {format(parseISO(appt.startDatetime), "HH:mm")}
         </div>
         <Button
           variant="destructive"
           size="sm"
-          onClick={() => navigate(`/clinical-notes/new?appointmentId=${appt.id}&draft=${encodeURIComponent(scratch)}`)}
+          onClick={() =>
+            navigate(
+              `/clinical-notes/new?appointmentId=${appt.appointmentId}&draft=${encodeURIComponent(scratch)}`,
+            )
+          }
         >
           <PhoneOff className="h-4 w-4" /> End & write note
         </Button>
@@ -47,20 +114,26 @@ export function VideoSessionPage() {
 
       <div className="flex flex-1 overflow-hidden">
         <div className="grid flex-1 place-items-center bg-black/90 text-white">
-          <iframe
-            title="Jitsi video room"
-            src={`https://meet.jit.si/${roomName}#userInfo.displayName=%22Therapist%22&config.prejoinPageEnabled=false`}
-            allow="camera; microphone; fullscreen; display-capture; autoplay"
-            className="h-full w-full border-0"
-          />
+          {meetingUrl ? (
+            <iframe
+              title="Video session"
+              src={meetingUrl}
+              allow="camera; microphone; fullscreen; display-capture; autoplay"
+              className="h-full w-full border-0"
+            />
+          ) : (
+            <p className="text-sm text-white/70">Waiting for meeting URL…</p>
+          )}
         </div>
 
         <aside className="w-96 shrink-0 space-y-3 overflow-y-auto scrollbar-thin border-l bg-card p-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Patient's reason</CardTitle>
+              <CardTitle className="text-sm">Session info</CardTitle>
             </CardHeader>
-            <CardContent className="text-sm">{appt.reason}</CardContent>
+            <CardContent className="text-sm text-muted-foreground">
+              Slot {appt.slotId.slice(0, 8)} · Mode {appt.mode}
+            </CardContent>
           </Card>
 
           <Card>
@@ -68,14 +141,14 @@ export function VideoSessionPage() {
               <CardTitle className="text-sm">Recent diary (last 5)</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {recentDiary.length === 0 && (
+              {diary.length === 0 && (
                 <p className="text-xs text-muted-foreground">No entries or no permission.</p>
               )}
-              {recentDiary.map((d) => (
+              {diary.map((d) => (
                 <div key={d.id} className="rounded-md border p-2 text-xs">
                   <div className="flex items-center justify-between">
-                    <span className="font-medium">{d.title}</span>
-                    <Badge variant="muted">{d.mood}</Badge>
+                    <span className="font-medium">{d.title ?? "Entry"}</span>
+                    {d.moodTag && <Badge variant="muted">{d.moodTag}</Badge>}
                   </div>
                   <p className="text-muted-foreground">{format(parseISO(d.createdAt), "PP")}</p>
                 </div>

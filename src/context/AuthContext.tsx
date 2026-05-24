@@ -1,50 +1,168 @@
 import * as React from "react";
-import { mockTherapist } from "@/lib/mockData";
+import {
+  clearSession,
+  getMe,
+  getStoredProfileId,
+  login as loginApi,
+  logoutApi,
+  register as registerApi,
+  storeSession,
+  type RegisterRequest,
+  type UserResponse,
+} from "@/lib/api/auth";
+import { getStoredToken } from "@/lib/api/http";
 import type { TherapistProfile, TherapistStatus } from "@/types";
 
 interface AuthState {
   user: TherapistProfile | null;
   isAuthenticated: boolean;
+  loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   register: (payload: Partial<TherapistProfile> & { password: string }) => Promise<void>;
   setStatus: (status: TherapistStatus) => void;
+  refreshUser: () => Promise<void>;
+  updateUser: (patch: Partial<TherapistProfile>) => void;
 }
 
 const AuthContext = React.createContext<AuthState | undefined>(undefined);
 
-const STORAGE_KEY = "umatter.therapist.session";
+const PROFILE_CACHE_KEY = "umatter.therapist.profileCache";
+
+function loadCachedProfile(): TherapistProfile | null {
+  try {
+    const raw = localStorage.getItem(PROFILE_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as TherapistProfile) : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistCachedProfile(profile: TherapistProfile | null) {
+  if (profile) localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(profile));
+  else localStorage.removeItem(PROFILE_CACHE_KEY);
+}
+
+function mapUserToTherapist(u: UserResponse, prev?: TherapistProfile | null): TherapistProfile {
+  return {
+    id: u.id,
+    fullName: u.fullName,
+    email: u.email,
+    phone: u.phoneNumber ?? prev?.phone ?? "",
+    dob: u.dob ?? prev?.dob ?? "",
+    avatarUrl: u.avatarUrl ?? prev?.avatarUrl,
+    role: u.role,
+    specialization: prev?.specialization ?? "",
+    bio: prev?.bio ?? "",
+    yearsOfExperience: prev?.yearsOfExperience ?? 0,
+    consultationFee: prev?.consultationFee ?? 0,
+    licenseNumber: prev?.licenseNumber ?? "",
+    licenseAuthority: prev?.licenseAuthority ?? "",
+    licenseExpiresAt: prev?.licenseExpiresAt ?? "",
+    status: prev?.status ?? "ACTIVE",
+    languages: prev?.languages ?? ["vi", "en"],
+  } as TherapistProfile;
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = React.useState<TherapistProfile | null>(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? (JSON.parse(raw) as TherapistProfile) : null;
-    } catch {
-      return null;
-    }
-  });
+  const [user, setUser] = React.useState<TherapistProfile | null>(() => loadCachedProfile());
+  const [loading, setLoading] = React.useState<boolean>(() => !!getStoredToken());
 
-  const persist = (u: TherapistProfile | null) => {
+  const persist = React.useCallback((u: TherapistProfile | null) => {
     setUser(u);
-    if (u) localStorage.setItem(STORAGE_KEY, JSON.stringify(u));
-    else localStorage.removeItem(STORAGE_KEY);
+    persistCachedProfile(u);
+  }, []);
+
+  const refreshUser = React.useCallback(async () => {
+    if (!getStoredToken()) {
+      setLoading(false);
+      return;
+    }
+    try {
+      const me = await getMe();
+      const mapped = mapUserToTherapist(me, loadCachedProfile());
+      persist(mapped);
+    } catch {
+      clearSession();
+      persist(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [persist]);
+
+  React.useEffect(() => {
+    refreshUser();
+  }, [refreshUser]);
+
+  const login: AuthState["login"] = async (email, password) => {
+    const auth = await loginApi(email, password);
+    storeSession(auth.token, auth.profileId);
+    try {
+      const me = await getMe();
+      const mapped = mapUserToTherapist(me, loadCachedProfile());
+      persist(mapped);
+    } catch {
+      persist({
+        id: auth.profileId,
+        fullName: "",
+        email: auth.email,
+        phone: "",
+        dob: "",
+        specialization: "",
+        bio: "",
+        yearsOfExperience: 0,
+        consultationFee: 0,
+        licenseNumber: "",
+        licenseAuthority: "",
+        licenseExpiresAt: "",
+        status: "ACTIVE",
+        languages: [],
+      });
+    }
   };
 
-  const login: AuthState["login"] = async (email) => {
-    await new Promise((r) => setTimeout(r, 400));
-    persist({ ...mockTherapist, email });
+  const logout = async () => {
+    try {
+      await logoutApi();
+    } catch {
+      // ignore — clear local state anyway
+    }
+    clearSession();
+    persist(null);
   };
-
-  const logout = () => persist(null);
 
   const register: AuthState["register"] = async (payload) => {
-    await new Promise((r) => setTimeout(r, 600));
+    const req: RegisterRequest = {
+      fullName: payload.fullName ?? "",
+      email: payload.email ?? "",
+      password: payload.password,
+      phoneNumber: payload.phone,
+      dob: payload.dob,
+      role: "THERAPIST",
+      avatarUrl: payload.avatarUrl,
+      specialization: payload.specialization,
+      bio: payload.bio,
+      yearsOfExperience: payload.yearsOfExperience,
+      consultationFee: payload.consultationFee,
+    };
+    const auth = await registerApi(req);
+    storeSession(auth.token, auth.profileId);
     persist({
-      ...mockTherapist,
-      ...payload,
+      id: auth.profileId,
+      fullName: req.fullName,
+      email: auth.email,
+      phone: req.phoneNumber ?? "",
+      dob: req.dob ?? "",
+      specialization: req.specialization ?? "",
+      bio: req.bio ?? "",
+      yearsOfExperience: req.yearsOfExperience ?? 0,
+      consultationFee: req.consultationFee ?? 0,
+      licenseNumber: payload.licenseNumber ?? "",
+      licenseAuthority: payload.licenseAuthority ?? "",
+      licenseExpiresAt: payload.licenseExpiresAt ?? "",
       status: "PENDING_LICENSE_VERIFICATION",
-    } as TherapistProfile);
+      languages: payload.languages ?? ["vi", "en"],
+    });
   };
 
   const setStatus = (status: TherapistStatus) => {
@@ -52,15 +170,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     persist({ ...user, status });
   };
 
+  const updateUser = (patch: Partial<TherapistProfile>) => {
+    if (!user) return;
+    persist({ ...user, ...patch });
+  };
+
+  React.useEffect(() => {
+    if (!user && getStoredProfileId()) {
+      // token present but profile missing — refreshUser will handle on mount
+    }
+  }, [user]);
+
   return (
     <AuthContext.Provider
       value={{
         user,
         isAuthenticated: !!user,
+        loading,
         login,
         logout,
         register,
         setStatus,
+        refreshUser,
+        updateUser,
       }}
     >
       {children}

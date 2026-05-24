@@ -11,12 +11,25 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { initials } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
 import { useI18n } from "@/context/I18nContext";
-import { mockNotifications, mockPatients } from "@/lib/mockData";
+import { listChannels, type ChannelItem } from "@/lib/api/social";
+import {
+  listNotifications,
+  markNotificationRead,
+  type NotificationItem,
+} from "@/lib/api/notification";
+
+const NOTIFICATION_LINK_BY_TYPE: Record<NotificationItem["type"], string | undefined> = {
+  BOOKING: "/appointments",
+  CHAT: "/messages",
+  STREAK: undefined,
+  REMINDER: undefined,
+  INSIGHT: undefined,
+};
 
 export function TopBar() {
   const { user, logout } = useAuth();
@@ -24,12 +37,46 @@ export function TopBar() {
   const navigate = useNavigate();
   const [q, setQ] = React.useState("");
   const [openSearch, setOpenSearch] = React.useState(false);
+  const [notifications, setNotifications] = React.useState<NotificationItem[]>([]);
+  const [channels, setChannels] = React.useState<ChannelItem[]>([]);
 
-  const unread = mockNotifications.filter((n) => !n.read).length;
+  React.useEffect(() => {
+    if (!user?.id) return;
+    listNotifications(user.id, 0, 20)
+      .then((page) => setNotifications(page.content ?? []))
+      .catch(() => setNotifications([]));
+  }, [user?.id]);
+
+  React.useEffect(() => {
+    listChannels()
+      .then((list) => setChannels(list ?? []))
+      .catch(() => setChannels([]));
+  }, []);
+
+  const unread = notifications.filter((n) => !n.read).length;
 
   const results = q
-    ? mockPatients.filter((p) => p.fullName.toLowerCase().includes(q.toLowerCase()))
+    ? channels.filter((c) =>
+        (c.counterpartDisplayName ?? c.counterpartProfilename ?? "")
+          .toLowerCase()
+          .includes(q.toLowerCase()),
+      )
     : [];
+
+  const handleNotificationClick = async (n: NotificationItem) => {
+    if (!n.read) {
+      try {
+        await markNotificationRead(n.notificationId);
+        setNotifications((curr) =>
+          curr.map((x) => (x.notificationId === n.notificationId ? { ...x, read: true } : x)),
+        );
+      } catch {
+        // ignore
+      }
+    }
+    const link = NOTIFICATION_LINK_BY_TYPE[n.type];
+    if (link) navigate(link);
+  };
 
   return (
     <header className="flex h-16 items-center justify-between border-b bg-card px-6">
@@ -43,20 +90,20 @@ export function TopBar() {
           }}
           onFocus={() => setOpenSearch(true)}
           onBlur={() => setTimeout(() => setOpenSearch(false), 150)}
-          placeholder="Search patient by name or id…"
+          placeholder="Search patient by name…"
           className="pl-9"
           aria-label="Global patient search"
         />
         {openSearch && results.length > 0 && (
           <div className="absolute left-0 right-0 top-12 z-20 rounded-md border bg-popover p-1 shadow-md">
-            {results.slice(0, 6).map((p) => (
+            {results.slice(0, 6).map((c) => (
               <button
-                key={p.id}
+                key={c.channelId}
                 className="flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
-                onMouseDown={() => navigate(`/patients/${p.id}`)}
+                onMouseDown={() => navigate(`/patients/${c.counterpartProfileId}`)}
               >
-                <span>{p.fullName}</span>
-                <span className="text-xs text-muted-foreground">{p.id}</span>
+                <span>{c.counterpartDisplayName ?? c.counterpartProfilename}</span>
+                <span className="text-xs text-muted-foreground">{c.counterpartProfileId.slice(0, 8)}</span>
               </button>
             ))}
           </div>
@@ -80,17 +127,22 @@ export function TopBar() {
           <DropdownMenuContent align="end" className="w-80">
             <DropdownMenuLabel>Notifications</DropdownMenuLabel>
             <DropdownMenuSeparator />
-            {mockNotifications.map((n) => (
+            {notifications.length === 0 && (
+              <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+                No notifications.
+              </div>
+            )}
+            {notifications.map((n) => (
               <DropdownMenuItem
-                key={n.id}
-                onClick={() => n.link && navigate(n.link)}
+                key={n.notificationId}
+                onClick={() => handleNotificationClick(n)}
                 className="flex flex-col items-start gap-0.5 py-2"
               >
                 <div className="flex w-full items-center justify-between">
                   <span className="font-medium">{n.title}</span>
                   {!n.read && <Badge variant="default" className="ml-2 h-1.5 w-1.5 p-0" />}
                 </div>
-                <span className="text-xs text-muted-foreground">{n.body}</span>
+                <span className="text-xs text-muted-foreground">{n.message}</span>
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -100,6 +152,7 @@ export function TopBar() {
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="gap-2 px-2">
               <Avatar className="h-8 w-8">
+                {user?.avatarUrl && <AvatarImage src={user.avatarUrl} alt="" />}
                 <AvatarFallback>{initials(user?.fullName ?? "T")}</AvatarFallback>
               </Avatar>
               <div className="hidden text-left leading-tight sm:block">
@@ -119,8 +172,8 @@ export function TopBar() {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onClick={() => {
-                logout();
+              onClick={async () => {
+                await logout();
                 navigate("/login");
               }}
               className="text-destructive"

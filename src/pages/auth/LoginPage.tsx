@@ -9,8 +9,8 @@ import { useAuth } from "@/context/AuthContext";
 export function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = React.useState("minhanh@umatter.health");
-  const [password, setPassword] = React.useState("therapist123");
+  const [email, setEmail] = React.useState("");
+  const [password, setPassword] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 

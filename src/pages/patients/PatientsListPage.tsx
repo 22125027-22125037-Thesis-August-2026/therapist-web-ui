@@ -1,26 +1,84 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
 import { format, parseISO } from "date-fns";
+import { Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PermissionBadge } from "@/components/PermissionBadge";
-import { RiskBadge } from "@/components/StatusBadge";
 import { initials } from "@/lib/utils";
-import { mockPatients } from "@/lib/mockData";
+import { listChannels, type ChannelItem } from "@/lib/api/social";
+import { getGrantStatus } from "@/lib/api/auth";
+
+interface PatientRow {
+  profileId: string;
+  displayName: string;
+  profilename: string;
+  avatarUrl?: string | null;
+  lastMessageAt?: string | null;
+  lastMessagePreview?: string | null;
+  unreadCount: number;
+  permissionGranted: boolean;
+  permissionLoading: boolean;
+  channel: ChannelItem;
+}
 
 export function PatientsListPage() {
   const [search, setSearch] = React.useState("");
   const [onlyGranted, setOnlyGranted] = React.useState(false);
-  const [tag, setTag] = React.useState("");
+  const [rows, setRows] = React.useState<PatientRow[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
 
-  const allTags = Array.from(new Set(mockPatients.flatMap((p) => p.tags))).sort();
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    listChannels()
+      .then(async (channels) => {
+        if (cancelled) return;
+        const initial: PatientRow[] = (channels ?? []).map((c) => ({
+          profileId: c.counterpartProfileId,
+          displayName: c.counterpartDisplayName ?? c.counterpartProfilename,
+          profilename: c.counterpartProfilename,
+          avatarUrl: c.counterpartAvatarUrl,
+          lastMessageAt: c.lastMessageAt,
+          lastMessagePreview: c.lastMessagePreview,
+          unreadCount: c.unreadCount,
+          permissionGranted: false,
+          permissionLoading: true,
+          channel: c,
+        }));
+        setRows(initial);
 
-  const filtered = mockPatients.filter((p) => {
-    if (onlyGranted && !p.permission.theyGaveMeAccess) return false;
-    if (tag && !p.tags.includes(tag)) return false;
-    if (search && !p.fullName.toLowerCase().includes(search.toLowerCase())) return false;
+        // Fan out for grant status per patient
+        const results = await Promise.allSettled(
+          initial.map((r) => getGrantStatus(r.profileId)),
+        );
+        if (cancelled) return;
+        setRows((curr) =>
+          curr.map((r, i) => {
+            const res = results[i];
+            if (res.status === "fulfilled") {
+              return {
+                ...r,
+                permissionGranted: !!res.value?.data?.theyGaveMeAccess,
+                permissionLoading: false,
+              };
+            }
+            return { ...r, permissionLoading: false };
+          }),
+        );
+      })
+      .catch((e) => !cancelled && setError(e?.message ?? "Failed to load patients"))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const filtered = rows.filter((r) => {
+    if (onlyGranted && !r.permissionGranted) return false;
+    if (search && !r.displayName.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
@@ -30,7 +88,7 @@ export function PatientsListPage() {
         <div>
           <h1 className="text-2xl font-semibold">Patients</h1>
           <p className="text-sm text-muted-foreground">
-            {filtered.length} of {mockPatients.length} patients shown.
+            {filtered.length} of {rows.length} patients shown.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -40,19 +98,6 @@ export function PatientsListPage() {
             onChange={(e) => setSearch(e.target.value)}
             className="w-56"
           />
-          <select
-            value={tag}
-            onChange={(e) => setTag(e.target.value)}
-            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
-            aria-label="Filter by tag"
-          >
-            <option value="">All tags</option>
-            {allTags.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -64,79 +109,81 @@ export function PatientsListPage() {
         </div>
       </div>
 
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
       <Card>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-              <tr>
-                <th className="p-3 text-left">Patient</th>
-                <th className="p-3 text-left">Age</th>
-                <th className="p-3 text-left">Primary concern</th>
-                <th className="p-3 text-left">Last session</th>
-                <th className="p-3 text-left">Next session</th>
-                <th className="p-3 text-left">Access</th>
-                <th className="p-3 text-left">Risk</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((p) => (
-                <tr key={p.id} className="border-t hover:bg-muted/30">
-                  <td className="p-3">
-                    <div className="flex items-center gap-3">
-                      <Avatar>
-                        <AvatarFallback>{initials(p.fullName)}</AvatarFallback>
-                      </Avatar>
-                      <div>
-                        <Link
-                          to={`/patients/${p.id}`}
-                          className="font-medium hover:underline"
-                        >
-                          {p.fullName}
-                        </Link>
-                        <div className="flex gap-1 pt-0.5">
-                          {p.tags.map((t) => (
-                            <Badge key={t} variant="secondary" className="text-[10px]">
-                              {t}
-                            </Badge>
-                          ))}
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="p-3 text-left">Patient</th>
+                  <th className="p-3 text-left">Profile name</th>
+                  <th className="p-3 text-left">Last message</th>
+                  <th className="p-3 text-left">Unread</th>
+                  <th className="p-3 text-left">Access</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((p) => (
+                  <tr key={p.profileId} className="border-t hover:bg-muted/30">
+                    <td className="p-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar>
+                          {p.avatarUrl && <AvatarImage src={p.avatarUrl} alt="" />}
+                          <AvatarFallback>{initials(p.displayName)}</AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <Link
+                            to={`/patients/${p.profileId}`}
+                            className="font-medium hover:underline"
+                          >
+                            {p.displayName}
+                          </Link>
                         </div>
                       </div>
-                    </div>
-                  </td>
-                  <td className="p-3">{p.age}</td>
-                  <td className="p-3 text-muted-foreground">{p.primaryConcern}</td>
-                  <td className="p-3 text-muted-foreground">
-                    {p.lastSessionAt ? format(parseISO(p.lastSessionAt), "PP") : "—"}
-                  </td>
-                  <td className="p-3 text-muted-foreground">
-                    {p.nextSessionAt ? format(parseISO(p.nextSessionAt), "PP") : "—"}
-                  </td>
-                  <td className="p-3">
-                    <PermissionBadge granted={p.permission.theyGaveMeAccess} />
-                  </td>
-                  <td className="p-3">
-                    <RiskBadge level={p.riskLevel} />
-                  </td>
-                  <td className="p-3 text-right">
-                    <Link
-                      to={`/patients/${p.id}`}
-                      className="text-sm text-primary hover:underline"
-                    >
-                      Open →
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-              {filtered.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="p-12 text-center text-muted-foreground">
-                    No patients match the filters.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+                    </td>
+                    <td className="p-3 text-muted-foreground">{p.profilename}</td>
+                    <td className="p-3 text-muted-foreground">
+                      {p.lastMessageAt ? format(parseISO(p.lastMessageAt), "PP HH:mm") : "—"}
+                    </td>
+                    <td className="p-3 text-muted-foreground">{p.unreadCount}</td>
+                    <td className="p-3">
+                      {p.permissionLoading ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                      ) : (
+                        <PermissionBadge granted={p.permissionGranted} />
+                      )}
+                    </td>
+                    <td className="p-3 text-right">
+                      <Link
+                        to={`/patients/${p.profileId}`}
+                        className="text-sm text-primary hover:underline"
+                      >
+                        Open →
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+                {filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="p-12 text-center text-muted-foreground">
+                      No patients match the filters.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          )}
         </CardContent>
       </Card>
     </div>

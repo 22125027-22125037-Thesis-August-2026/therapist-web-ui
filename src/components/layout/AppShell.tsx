@@ -1,10 +1,20 @@
 import { Navigate, Outlet } from "react-router-dom";
+import { Loader2 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { useAuth } from "@/context/AuthContext";
 
 export function AppShell() {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="grid h-screen place-items-center bg-background text-muted-foreground">
+        <Loader2 className="h-6 w-6 animate-spin" />
+      </div>
+    );
+  }
+
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   if (user && user.status !== "ACTIVE") return <Navigate to="/license-pending" replace />;
 

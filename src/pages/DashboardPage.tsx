@@ -1,9 +1,11 @@
+import * as React from "react";
 import { Link } from "react-router-dom";
-import { format, isSameDay, isWithinInterval, parseISO, startOfWeek } from "date-fns";
+import { format, isSameDay, isWithinInterval, parseISO, startOfWeek, isAfter } from "date-fns";
 import {
   AlertTriangle,
   CalendarCheck,
   ClipboardList,
+  Loader2,
   MessagesSquare,
   Star,
   Users,
@@ -15,18 +17,81 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { initials } from "@/lib/utils";
-import { mockAppointments, mockNotes, mockPatients } from "@/lib/mockData";
 import { useAuth } from "@/context/AuthContext";
+import { listChannels, type ChannelItem } from "@/lib/api/social";
+import {
+  getAppointmentHistory,
+  getUpcomingAppointment,
+  type AppointmentSummary,
+} from "@/lib/api/therapist";
+import { ApiError } from "@/lib/api/http";
 
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 
+interface AppointmentWithPatient extends AppointmentSummary {
+  patientName: string;
+}
+
 export function DashboardPage() {
   const { user } = useAuth();
-  const now = new Date();
+  const now = React.useMemo(() => new Date(), []);
 
-  const todays = mockAppointments
-    .filter((a) => isSameDay(parseISO(a.startsAt), now) && a.status !== "CANCELLED")
-    .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  const [channels, setChannels] = React.useState<ChannelItem[]>([]);
+  const [upcoming, setUpcoming] = React.useState<AppointmentWithPatient[]>([]);
+  const [history, setHistory] = React.useState<AppointmentWithPatient[]>([]);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    listChannels()
+      .then(async (chs) => {
+        if (cancelled) return;
+        setChannels(chs ?? []);
+        const upcomingResults = await Promise.allSettled(
+          (chs ?? []).map((c) =>
+            getUpcomingAppointment(c.counterpartProfileId).then((a) => ({
+              ...a,
+              patientName: c.counterpartDisplayName ?? c.counterpartProfilename,
+            })),
+          ),
+        );
+        const historyResults = await Promise.allSettled(
+          (chs ?? []).map((c) =>
+            getAppointmentHistory(c.counterpartProfileId).then((list) =>
+              list.map((a) => ({
+                ...a,
+                patientName: c.counterpartDisplayName ?? c.counterpartProfilename,
+              })),
+            ),
+          ),
+        );
+        if (cancelled) return;
+        setUpcoming(
+          upcomingResults
+            .filter((r): r is PromiseFulfilledResult<AppointmentWithPatient> => r.status === "fulfilled")
+            .map((r) => r.value),
+        );
+        setHistory(
+          historyResults
+            .filter((r): r is PromiseFulfilledResult<AppointmentWithPatient[]> => r.status === "fulfilled")
+            .flatMap((r) => r.value),
+        );
+      })
+      .catch((err) => {
+        if (err instanceof ApiError) {
+          console.warn("Dashboard load failed", err.status, err.message);
+        }
+      })
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  const todays = upcoming
+    .filter((a) => isSameDay(parseISO(a.startDatetime), now) && a.status !== "CANCELLED")
+    .sort((a, b) => a.startDatetime.localeCompare(b.startDatetime));
 
   const weekStart = startOfWeek(now, { weekStartsOn: 1 });
   const weekDays = Array.from({ length: 7 }, (_, i) => {
@@ -35,25 +100,28 @@ export function DashboardPage() {
     return d;
   });
   const apptsByDay = (d: Date) =>
-    mockAppointments.filter((a) => isSameDay(parseISO(a.startsAt), d) && a.status !== "CANCELLED")
+    upcoming.filter((a) => isSameDay(parseISO(a.startDatetime), d) && a.status !== "CANCELLED")
       .length;
 
-  const pendingBookings = mockAppointments.filter((a) => a.status === "REQUESTED").length;
-  const recentGrants = mockPatients.filter((p) => p.permission.theyGaveMeAccess).slice(0, 2);
-  const draftNotes = mockNotes.filter((n) => n.status === "DRAFT").length;
+  const pendingBookings = upcoming.filter((a) => a.status === "REQUESTED").length;
+  const recentGrants = channels.filter((c) => c.unreadCount > 0).slice(0, 2);
 
-  const completedThisMonth = mockAppointments.filter((a) => a.status === "COMPLETED").length;
-  const activePatients = mockPatients.filter((p) => p.lastSessionAt).length;
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const completedThisMonth = history.filter(
+    (a) => a.status === "COMPLETED" && isAfter(parseISO(a.startDatetime), monthStart),
+  ).length;
+  const activePatients = channels.length;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-2xl font-semibold">
-            Good morning, {user?.fullName?.split(" ").slice(-1)} 👋
+            Welcome, {user?.fullName?.split(" ").slice(-1)?.[0] ?? "Doctor"} 👋
           </h1>
           <p className="text-sm text-muted-foreground">
-            {format(now, "EEEE, d LLLL yyyy")} · You have {todays.length} sessions today.
+            {format(now, "EEEE, d LLLL yyyy")} · You have {todays.length} session
+            {todays.length === 1 ? "" : "s"} today.
           </p>
         </div>
         <Button asChild>
@@ -64,8 +132,8 @@ export function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Kpi icon={Users} label="Active patients" value={activePatients} />
         <Kpi icon={CalendarCheck} label="Sessions this month" value={completedThisMonth} />
-        <Kpi icon={Star} label="Avg rating" value={"4.8 / 5"} />
-        <Kpi icon={ClipboardList} label="Draft notes" value={draftNotes} accent="warning" />
+        <Kpi icon={Star} label="Avg rating" value={"—"} />
+        <Kpi icon={ClipboardList} label="Draft notes" value={"—"} accent="warning" />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">
@@ -80,59 +148,65 @@ export function DashboardPage() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-2">
-            {todays.length === 0 && (
+            {loading && (
+              <div className="flex items-center justify-center py-6 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+              </div>
+            )}
+            {!loading && todays.length === 0 && (
               <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
                 No sessions scheduled today. Enjoy the breathing room.
               </p>
             )}
-            {todays.map((a) => {
-              const start = parseISO(a.startsAt);
-              const inWindow = isWithinInterval(now, {
-                start: new Date(start.getTime() - TEN_MINUTES_MS),
-                end: parseISO(a.endsAt),
-              });
-              return (
-                <div
-                  key={a.id}
-                  className="flex items-center justify-between rounded-md border p-3"
-                >
-                  <div className="flex items-center gap-3">
-                    <Avatar>
-                      <AvatarFallback>{initials(a.patientName)}</AvatarFallback>
-                    </Avatar>
-                    <div>
-                      <p className="text-sm font-medium">{a.patientName}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {format(start, "HH:mm")} · {a.reason}
-                      </p>
+            {!loading &&
+              todays.map((a) => {
+                const start = parseISO(a.startDatetime);
+                const inWindow = isWithinInterval(now, {
+                  start: new Date(start.getTime() - TEN_MINUTES_MS),
+                  end: new Date(start.getTime() + 60 * 60 * 1000),
+                });
+                return (
+                  <div
+                    key={a.appointmentId}
+                    className="flex items-center justify-between rounded-md border p-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Avatar>
+                        <AvatarFallback>{initials(a.patientName)}</AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <p className="text-sm font-medium">{a.patientName}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {format(start, "HH:mm")} · {a.therapistSpecialization ?? "Session"}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={a.mode === "VIDEO" ? "default" : "secondary"}>
+                        {a.mode === "VIDEO" ? (
+                          <>
+                            <Video className="mr-1 h-3 w-3" /> Video
+                          </>
+                        ) : (
+                          <>
+                            <MessageCircle className="mr-1 h-3 w-3" /> Chat
+                          </>
+                        )}
+                      </Badge>
+                      <Button
+                        size="sm"
+                        asChild
+                        variant={inWindow ? "default" : "outline"}
+                        disabled={!inWindow}
+                      >
+                        <Link to={`/appointments/${a.appointmentId}`}>
+                          {inWindow ? "Join" : "Open"}
+                        </Link>
+                      </Button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={a.mode === "VIDEO" ? "default" : "secondary"}>
-                      {a.mode === "VIDEO" ? (
-                        <>
-                          <Video className="mr-1 h-3 w-3" /> Video
-                        </>
-                      ) : (
-                        <>
-                          <MessageCircle className="mr-1 h-3 w-3" /> Chat
-                        </>
-                      )}
-                    </Badge>
-                    <Button
-                      size="sm"
-                      asChild
-                      variant={inWindow ? "default" : "outline"}
-                      disabled={!inWindow}
-                    >
-                      <Link to={`/appointments/${a.id}`}>
-                        {inWindow ? "Join" : "Open"}
-                      </Link>
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
+                );
+              })}
           </CardContent>
         </Card>
 
@@ -176,21 +250,15 @@ export function DashboardPage() {
           <CardContent className="space-y-3">
             <Action
               icon={MessagesSquare}
-              title={`${pendingBookings} new booking${pendingBookings === 1 ? "" : "s"} awaiting confirmation`}
+              title={`${pendingBookings} booking${pendingBookings === 1 ? "" : "s"} awaiting confirmation`}
               cta="Review"
               to="/appointments?tab=upcoming"
             />
             <Action
               icon={Users}
-              title={`${recentGrants.length} patient${recentGrants.length === 1 ? "" : "s"} granted you data access`}
+              title={`${recentGrants.length} channel${recentGrants.length === 1 ? "" : "s"} with unread messages`}
               cta="Open"
-              to="/patients?perm=granted"
-            />
-            <Action
-              icon={ClipboardList}
-              title={`${draftNotes} session${draftNotes === 1 ? "" : "s"} with unfinished clinical notes`}
-              cta="Write"
-              to="/clinical-notes?status=draft"
+              to="/messages"
             />
           </CardContent>
         </Card>
@@ -204,14 +272,22 @@ export function DashboardPage() {
             <CardDescription>Patients with concerning recent tracking data.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="rounded-md border-l-4 border-destructive bg-destructive/5 p-3">
-              <p className="text-sm font-medium">3 patients reported sleep quality ≤ 2 for 4+ nights.</p>
-              <p className="text-xs text-muted-foreground">Including Lê Bảo Hân, Trần Quốc Việt.</p>
-            </div>
-            <div className="rounded-md border-l-4 border-warning bg-warning/5 p-3">
-              <p className="text-sm font-medium">Trần Quốc Việt's mood trended low all week.</p>
-              <p className="text-xs text-muted-foreground">Consider safety check on next session.</p>
-            </div>
+            {channels.filter((c) => c.moodAlert).length === 0 && (
+              <p className="text-sm text-muted-foreground">No active alerts.</p>
+            )}
+            {channels
+              .filter((c) => c.moodAlert)
+              .map((c) => (
+                <div
+                  key={c.channelId}
+                  className="rounded-md border-l-4 border-warning bg-warning/5 p-3"
+                >
+                  <p className="text-sm font-medium">
+                    {c.counterpartDisplayName ?? c.counterpartProfilename}
+                  </p>
+                  <p className="text-xs text-muted-foreground">{c.moodAlert}</p>
+                </div>
+              ))}
           </CardContent>
         </Card>
       </div>

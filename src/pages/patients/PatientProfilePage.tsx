@@ -3,12 +3,11 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 import {
   Calendar,
-  Phone,
+  Loader2,
   Mail,
-  Tag,
-  ShieldCheck,
   ShieldAlert,
-  Eye,
+  ShieldCheck,
+  Tag,
 } from "lucide-react";
 import {
   BarChart,
@@ -23,39 +22,128 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { LockedCard } from "@/components/LockedCard";
-import { RiskBadge } from "@/components/StatusBadge";
 import { initials } from "@/lib/utils";
+import { getGrantStatus, getProfileSummary, type ProfileSummary } from "@/lib/api/auth";
 import {
-  mockAppointments,
-  mockAudit,
-  mockDiary,
-  mockFood,
-  mockMood,
-  mockNotes,
-  mockPatients,
-  mockSleep,
-} from "@/lib/mockData";
+  listDiary,
+  listFood,
+  listMood,
+  listSleep,
+  type DiaryEntryResponse,
+  type FoodLogResponse,
+  type MoodLogResponse,
+  type SleepLogResponse,
+} from "@/lib/api/tracking";
+import {
+  getAppointmentHistory,
+  getUpcomingAppointment,
+  getClinicalNoteByAppointment,
+  type AppointmentSummary,
+  type ClinicalNoteResponse,
+} from "@/lib/api/therapist";
+import { ApiError } from "@/lib/api/http";
 
-const moodOrder = ["BAD", "LOW", "NEUTRAL", "GOOD", "GREAT"] as const;
+interface NoteRow extends ClinicalNoteResponse {
+  appointmentDate: string;
+}
 
 export function PatientProfilePage() {
   const { id } = useParams();
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") ?? "overview";
-  const patient = mockPatients.find((p) => p.id === id);
-  const [requesting, setRequesting] = React.useState(false);
 
-  if (!patient) return <p className="p-6">Patient not found.</p>;
-  const granted = patient.permission.theyGaveMeAccess;
+  const [profile, setProfile] = React.useState<ProfileSummary | null>(null);
+  const [grantStatus, setGrantStatus] = React.useState<{
+    theyGaveMeAccess: boolean;
+    iGaveThemAccess: boolean;
+    expiresAt?: string;
+  } | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [sessions, setSessions] = React.useState<AppointmentSummary[]>([]);
+  const [notes, setNotes] = React.useState<NoteRow[]>([]);
 
-  const sessions = mockAppointments.filter((a) => a.patientId === patient.id);
-  const notes = mockNotes.filter((n) => n.patientId === patient.id);
+  React.useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    (async () => {
+      try {
+        const [p, gs, upcoming, history] = await Promise.all([
+          getProfileSummary(id).catch(() => null),
+          getGrantStatus(id).catch(() => null),
+          getUpcomingAppointment(id).catch(() => null),
+          getAppointmentHistory(id).catch(() => [] as AppointmentSummary[]),
+        ]);
+        if (cancelled) return;
+        if (p) setProfile(p);
+        if (gs?.data) {
+          setGrantStatus({
+            theyGaveMeAccess: gs.data.theyGaveMeAccess,
+            iGaveThemAccess: gs.data.iGaveThemAccess,
+            expiresAt: gs.data.theirGrant?.expiresAt,
+          });
+        }
+        const allSessions = [
+          ...(upcoming ? [upcoming] : []),
+          ...history,
+        ];
+        // dedupe
+        const seen = new Set<string>();
+        const merged = allSessions.filter((a) => {
+          if (seen.has(a.appointmentId)) return false;
+          seen.add(a.appointmentId);
+          return true;
+        });
+        setSessions(merged);
+
+        const completed = merged.filter((s) => s.status === "COMPLETED");
+        const noteResults = await Promise.allSettled(
+          completed.map((s) =>
+            getClinicalNoteByAppointment(s.appointmentId).then((n) => ({
+              ...n,
+              appointmentDate: s.startDatetime,
+            })),
+          ),
+        );
+        if (cancelled) return;
+        setNotes(
+          noteResults
+            .filter((r): r is PromiseFulfilledResult<NoteRow> => r.status === "fulfilled")
+            .map((r) => r.value),
+        );
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message ?? "Failed to load patient");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12 text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin" />
+      </div>
+    );
+  }
+
+  if (error || !profile || !id) {
+    return <p className="p-6 text-muted-foreground">{error ?? "Patient not found."}</p>;
+  }
+
+  const granted = !!grantStatus?.theyGaveMeAccess;
+  const fullName = profile.name;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
@@ -64,44 +152,22 @@ export function PatientProfilePage() {
           <CardContent className="space-y-4 pt-6 text-sm">
             <div className="flex items-center gap-3">
               <Avatar className="h-14 w-14">
-                <AvatarFallback>{initials(patient.fullName)}</AvatarFallback>
+                {profile.avatarUrl && <AvatarImage src={profile.avatarUrl} alt="" />}
+                <AvatarFallback>{initials(fullName)}</AvatarFallback>
               </Avatar>
               <div>
-                <h2 className="font-semibold">{patient.fullName}</h2>
-                <p className="text-xs text-muted-foreground">
-                  Age {patient.age} · {patient.gender.toLowerCase()} · {patient.role.toLowerCase()}
-                </p>
+                <h2 className="font-semibold">{fullName}</h2>
+                <p className="text-xs text-muted-foreground">{profile.role}</p>
               </div>
             </div>
 
-            <div>
-              <RiskBadge level={patient.riskLevel} />
+            <div className="space-y-1.5 text-xs text-muted-foreground">
+              {profile.email && (
+                <div className="flex items-center gap-2">
+                  <Mail className="h-3 w-3" /> {profile.email}
+                </div>
+              )}
             </div>
-
-            {patient.contact && (
-              <div className="space-y-1.5 text-xs text-muted-foreground">
-                {patient.contact.email && (
-                  <div className="flex items-center gap-2">
-                    <Mail className="h-3 w-3" /> {patient.contact.email}
-                  </div>
-                )}
-                {patient.contact.phone && (
-                  <div className="flex items-center gap-2">
-                    <Phone className="h-3 w-3" /> {patient.contact.phone}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {patient.role === "TEEN" && patient.emergencyContact && (
-              <div className="rounded-md border bg-warning/5 p-2 text-xs">
-                <p className="font-medium">Emergency contact</p>
-                <p className="text-muted-foreground">
-                  {patient.emergencyContact.name} ({patient.emergencyContact.relation}) ·{" "}
-                  {patient.emergencyContact.phone}
-                </p>
-              </div>
-            )}
 
             <Separator />
 
@@ -116,21 +182,11 @@ export function PatientProfilePage() {
                       <ShieldCheck className="h-3.5 w-3.5" />
                       Data access granted
                     </div>
-                    {patient.permission.expiresAt && (
+                    {grantStatus?.expiresAt && (
                       <p className="mt-1 text-muted-foreground">
-                        Expires {format(parseISO(patient.permission.expiresAt), "PP")}
+                        Expires {format(parseISO(grantStatus.expiresAt), "PP")}
                       </p>
                     )}
-                  </div>
-                ) : patient.permission.grantStatus === "PENDING" ? (
-                  <div className="rounded-md border border-warning/40 bg-warning/5 p-2 text-xs">
-                    <div className="flex items-center gap-2 font-medium text-warning">
-                      <ShieldAlert className="h-3.5 w-3.5" />
-                      You requested access on{" "}
-                      {patient.permission.requestedAt &&
-                        format(parseISO(patient.permission.requestedAt), "PP")}
-                    </div>
-                    <p className="mt-1 text-muted-foreground">Waiting for patient approval.</p>
                   </div>
                 ) : (
                   <div className="rounded-md border bg-muted/30 p-2 text-xs">
@@ -138,19 +194,10 @@ export function PatientProfilePage() {
                       <ShieldAlert className="h-3.5 w-3.5 text-muted-foreground" />
                       No data access granted
                     </div>
+                    <p className="mt-1 text-muted-foreground">
+                      Therapist-initiated access requests are not yet supported by the API.
+                    </p>
                   </div>
-                )}
-                {!granted && (
-                  <Button
-                    size="sm"
-                    className="w-full"
-                    disabled={requesting || patient.permission.grantStatus === "PENDING"}
-                    onClick={() => setRequesting(true)}
-                  >
-                    {patient.permission.grantStatus === "PENDING"
-                      ? "Request pending"
-                      : "Request data access"}
-                  </Button>
                 )}
               </div>
             </div>
@@ -161,29 +208,9 @@ export function PatientProfilePage() {
               <p className="mb-2 flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
                 <Tag className="h-3 w-3" /> Tags
               </p>
-              <div className="flex flex-wrap gap-1">
-                {patient.tags.map((t) => (
-                  <Badge key={t} variant="secondary">
-                    {t}
-                  </Badge>
-                ))}
-                <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">
-                  + Add
-                </Button>
-              </div>
-            </div>
-
-            <Separator />
-
-            <div className="text-xs text-muted-foreground">
-              <p className="flex items-center gap-1">
-                <Eye className="h-3 w-3" />
-                Last viewed by you:{" "}
-                {mockAudit.find((a) => a.patientId === patient.id)
-                  ? format(parseISO(mockAudit.find((a) => a.patientId === patient.id)!.at), "PP HH:mm")
-                  : "never"}
+              <p className="text-xs text-muted-foreground">
+                Patient tagging is not yet supported by the backend.
               </p>
-              <p className="mt-0.5">All views appear in the patient's audit log.</p>
             </div>
           </CardContent>
         </Card>
@@ -202,28 +229,44 @@ export function PatientProfilePage() {
           </TabsList>
 
           <TabsContent value="overview">
-            <OverviewTab patientId={patient.id} />
+            <OverviewTab profile={profile} sessions={sessions} />
           </TabsContent>
 
           <TabsContent value="notes">
-            <NotesTab patientId={patient.id} />
+            <NotesTab patientId={id} patientName={fullName} notes={notes} />
           </TabsContent>
 
           <TabsContent value="diary">
-            {granted ? <DiaryTab patientId={patient.id} /> : <LockedCard patientName={patient.fullName} pending={patient.permission.grantStatus === "PENDING"} onRequestAccess={() => {}} />}
+            {granted ? (
+              <DiaryTab patientId={id} />
+            ) : (
+              <LockedCard patientName={fullName} />
+            )}
           </TabsContent>
           <TabsContent value="food">
-            {granted ? <FoodTab patientId={patient.id} /> : <LockedCard patientName={patient.fullName} pending={patient.permission.grantStatus === "PENDING"} onRequestAccess={() => {}} />}
+            {granted ? (
+              <FoodTab patientId={id} />
+            ) : (
+              <LockedCard patientName={fullName} />
+            )}
           </TabsContent>
           <TabsContent value="sleep">
-            {granted ? <SleepTab patientId={patient.id} /> : <LockedCard patientName={patient.fullName} pending={patient.permission.grantStatus === "PENDING"} onRequestAccess={() => {}} />}
+            {granted ? (
+              <SleepTab patientId={id} />
+            ) : (
+              <LockedCard patientName={fullName} />
+            )}
           </TabsContent>
           <TabsContent value="mood">
-            {granted ? <MoodTab patientId={patient.id} /> : <LockedCard patientName={patient.fullName} pending={patient.permission.grantStatus === "PENDING"} onRequestAccess={() => {}} />}
+            {granted ? (
+              <MoodTab patientId={id} />
+            ) : (
+              <LockedCard patientName={fullName} />
+            )}
           </TabsContent>
 
           <TabsContent value="sessions">
-            <SessionsTab patientId={patient.id} sessions={sessions} notes={notes} />
+            <SessionsTab sessions={sessions} notes={notes} />
           </TabsContent>
         </Tabs>
       </div>
@@ -231,57 +274,72 @@ export function PatientProfilePage() {
   );
 }
 
-function OverviewTab({ patientId }: { patientId: string }) {
-  const patient = mockPatients.find((p) => p.id === patientId)!;
-  const form = patient.matchingForm ?? {};
+function OverviewTab({
+  profile,
+  sessions,
+}: {
+  profile: ProfileSummary;
+  sessions: AppointmentSummary[];
+}) {
+  const lastSession = sessions
+    .filter((s) => s.status === "COMPLETED")
+    .sort((a, b) => b.startDatetime.localeCompare(a.startDatetime))[0];
+  const nextSession = sessions
+    .filter((s) => s.status === "UPCOMING" || s.status === "REQUESTED")
+    .sort((a, b) => a.startDatetime.localeCompare(b.startDatetime))[0];
+
   return (
     <div className="grid gap-4 md:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle>Matching form responses</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          {Object.keys(form).length === 0 && (
-            <p className="text-muted-foreground">No matching form on file.</p>
-          )}
-          {Object.entries(form).map(([k, v]) => (
-            <div key={k}>
-              <p className="text-xs uppercase text-muted-foreground">{k}</p>
-              <p>{v}</p>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
       <Card>
         <CardHeader>
           <CardTitle>At a glance</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
           <p>
-            <span className="text-muted-foreground">Primary concern:</span>{" "}
-            {patient.primaryConcern}
+            <span className="text-muted-foreground">Name:</span> {profile.name}
+          </p>
+          <p>
+            <span className="text-muted-foreground">Email:</span> {profile.email}
+          </p>
+          <p>
+            <span className="text-muted-foreground">Role:</span> {profile.role}
           </p>
           <p>
             <span className="text-muted-foreground">Last session:</span>{" "}
-            {patient.lastSessionAt ? format(parseISO(patient.lastSessionAt), "PP") : "—"}
+            {lastSession ? format(parseISO(lastSession.startDatetime), "PP") : "—"}
           </p>
           <p>
             <span className="text-muted-foreground">Next session:</span>{" "}
-            {patient.nextSessionAt ? format(parseISO(patient.nextSessionAt), "PP") : "—"}
+            {nextSession ? format(parseISO(nextSession.startDatetime), "PP") : "—"}
           </p>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Matching form</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground">
+          The therapist-facing endpoint to read a patient's matching form is not yet implemented.
         </CardContent>
       </Card>
     </div>
   );
 }
 
-function NotesTab({ patientId }: { patientId: string }) {
-  const notes = mockNotes.filter((n) => n.patientId === patientId);
+function NotesTab({
+  patientId,
+  patientName,
+  notes,
+}: {
+  patientId: string;
+  patientName: string;
+  notes: NoteRow[];
+}) {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          Your private notes about this patient. The patient never sees these.
+          Clinical notes for {patientName}. One note per completed appointment.
         </p>
         <Button asChild size="sm">
           <Link to={`/clinical-notes/new?patientId=${patientId}`}>New note</Link>
@@ -295,18 +353,18 @@ function NotesTab({ patientId }: { patientId: string }) {
         </Card>
       )}
       {notes.map((n) => (
-        <Card key={n.id}>
+        <Card key={n.noteId}>
           <CardContent className="flex items-center justify-between p-4">
             <div>
               <p className="text-sm font-medium">{format(parseISO(n.createdAt), "PP")}</p>
-              <p className="text-xs text-muted-foreground">{n.summary ?? "(no summary)"}</p>
+              <p className="text-xs text-muted-foreground">
+                {n.diagnosis ?? "(no diagnosis)"}
+              </p>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant={n.status === "FINALIZED" ? "default" : "warning"}>
-                {n.status}
-              </Badge>
+              <Badge variant="default">{n.appointmentStatus ?? "—"}</Badge>
               <Button asChild size="sm" variant="outline">
-                <Link to={`/clinical-notes/${n.id}`}>Open</Link>
+                <Link to={`/clinical-notes/${n.appointmentId}`}>Open</Link>
               </Button>
             </div>
           </CardContent>
@@ -318,54 +376,105 @@ function NotesTab({ patientId }: { patientId: string }) {
 
 function DiaryTab({ patientId }: { patientId: string }) {
   const [q, setQ] = React.useState("");
-  const entries = mockDiary
-    .filter((d) => d.patientId === patientId)
-    .filter((d) => (q ? d.title.toLowerCase().includes(q.toLowerCase()) || d.body.toLowerCase().includes(q.toLowerCase()) : true))
+  const [entries, setEntries] = React.useState<DiaryEntryResponse[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    listDiary(patientId)
+      .then((data) => !cancelled && setEntries(data))
+      .catch((e: ApiError) =>
+        !cancelled && setError(e?.message ?? "Failed to load diary"),
+      )
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [patientId]);
+
+  const filtered = entries
+    .filter((d) =>
+      q
+        ? (d.title ?? "").toLowerCase().includes(q.toLowerCase()) ||
+          d.content.toLowerCase().includes(q.toLowerCase())
+        : true,
+    )
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
   return (
     <div className="space-y-3">
       <Input placeholder="Search entries…" value={q} onChange={(e) => setQ(e.target.value)} />
-      {entries.length === 0 && (
+      {loading && (
+        <Card>
+          <CardContent className="flex items-center justify-center py-12 text-muted-foreground">
+            <Loader2 className="h-5 w-5 animate-spin" />
+          </CardContent>
+        </Card>
+      )}
+      {!loading && error && (
+        <Card>
+          <CardContent className="py-12 text-center text-sm text-destructive">{error}</CardContent>
+        </Card>
+      )}
+      {!loading && !error && filtered.length === 0 && (
         <Card>
           <CardContent className="py-12 text-center text-sm text-muted-foreground">
             No diary entries.
           </CardContent>
         </Card>
       )}
-      {entries.map((d) => (
-        <Card key={d.id}>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <p className="font-medium">{d.title}</p>
-              <Badge variant="muted">{d.mood}</Badge>
-            </div>
-            <p className="text-xs text-muted-foreground">{format(parseISO(d.createdAt), "PP HH:mm")}</p>
-            <p className="mt-2 text-sm">{d.body}</p>
-          </CardContent>
-        </Card>
-      ))}
+      {!loading &&
+        !error &&
+        filtered.map((d) => (
+          <Card key={d.id}>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <p className="font-medium">{d.title ?? "Diary entry"}</p>
+                {d.moodTag && <Badge variant="muted">{d.moodTag}</Badge>}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {format(parseISO(d.createdAt), "PP HH:mm")}
+              </p>
+              <p className="mt-2 text-sm">{d.content}</p>
+            </CardContent>
+          </Card>
+        ))}
     </div>
   );
 }
 
 function FoodTab({ patientId }: { patientId: string }) {
-  const logs = mockFood.filter((f) => f.patientId === patientId);
+  const [logs, setLogs] = React.useState<FoodLogResponse[]>([]);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    listFood(patientId)
+      .then((data) => !cancelled && setLogs(data))
+      .catch(() => !cancelled && setLogs([]))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [patientId]);
+
   const byDay = Array.from({ length: 7 }, (_, i) => {
     const day = new Date();
     day.setDate(day.getDate() - i);
     const dStr = format(day, "yyyy-MM-dd");
     const total = logs
-      .filter((l) => l.createdAt.startsWith(dStr))
-      .reduce((sum, l) => sum + l.satiety, 0);
-    return { day: format(day, "EEE"), satiety: total };
+      .filter((l) => (l.entryDate ?? l.createdAt).startsWith(dStr))
+      .reduce((sum, l) => sum + (l.waterGlasses ?? 0), 0);
+    return { day: format(day, "EEE"), water: total };
   }).reverse();
 
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>Daily satiety (last 7 days)</CardTitle>
+          <CardTitle>Water (glasses, last 7 days)</CardTitle>
         </CardHeader>
         <CardContent className="h-56">
           <ResponsiveContainer width="100%" height="100%">
@@ -374,7 +483,7 @@ function FoodTab({ patientId }: { patientId: string }) {
               <XAxis dataKey="day" />
               <YAxis />
               <Tooltip />
-              <Bar dataKey="satiety" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="water" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
@@ -385,16 +494,23 @@ function FoodTab({ patientId }: { patientId: string }) {
           <CardTitle>Recent logs</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
-          {logs.length === 0 && <p className="text-muted-foreground">No food logs.</p>}
+          {loading && (
+            <div className="flex items-center justify-center py-4 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+            </div>
+          )}
+          {!loading && logs.length === 0 && (
+            <p className="text-muted-foreground">No food logs.</p>
+          )}
           {logs.map((l) => (
             <div key={l.id} className="flex items-center justify-between rounded-md border p-2">
               <div>
-                <p className="font-medium">
-                  {l.mealType} · {l.items}
+                <p className="font-medium">{l.foodDescription}</p>
+                <p className="text-xs text-muted-foreground">
+                  {format(parseISO(l.entryDate ?? l.createdAt), "PP")}
                 </p>
-                <p className="text-xs text-muted-foreground">{format(parseISO(l.createdAt), "PP")}</p>
               </div>
-              <Badge variant="secondary">Satiety {l.satiety}/5</Badge>
+              <Badge variant="secondary">{l.satietyLevel}</Badge>
             </div>
           ))}
         </CardContent>
@@ -404,25 +520,42 @@ function FoodTab({ patientId }: { patientId: string }) {
 }
 
 function SleepTab({ patientId }: { patientId: string }) {
-  const logs = mockSleep
-    .filter((s) => s.patientId === patientId)
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .map((s) => ({ day: s.date.slice(5), duration: Number(s.durationHours.toFixed(1)), quality: s.quality }));
+  const [logs, setLogs] = React.useState<SleepLogResponse[]>([]);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    listSleep(patientId)
+      .then((data) => !cancelled && setLogs(data))
+      .catch(() => !cancelled && setLogs([]))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [patientId]);
+
+  const chartData = [...logs]
+    .sort((a, b) => (a.entryDate ?? a.createdAt).localeCompare(b.entryDate ?? b.createdAt))
+    .map((s) => ({
+      day: (s.entryDate ?? s.createdAt).slice(5, 10),
+      durationH: ((s.durationMinutes ?? 0) / 60).toFixed(1),
+      quality: s.sleepQuality ?? 0,
+    }));
 
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>Sleep last 7 days</CardTitle>
+          <CardTitle>Sleep duration & quality</CardTitle>
         </CardHeader>
         <CardContent className="h-64">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={logs}>
+            <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="day" />
               <YAxis />
               <Tooltip />
-              <Line dataKey="duration" stroke="hsl(var(--primary))" strokeWidth={2} dot />
+              <Line dataKey="durationH" stroke="hsl(var(--primary))" strokeWidth={2} dot />
               <Line dataKey="quality" stroke="hsl(var(--success))" strokeWidth={2} dot />
             </LineChart>
           </ResponsiveContainer>
@@ -433,15 +566,26 @@ function SleepTab({ patientId }: { patientId: string }) {
           <CardTitle>Recent nights</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
-          {mockSleep.filter((s) => s.patientId === patientId).map((s) => (
+          {loading && (
+            <div className="flex items-center justify-center py-4 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+            </div>
+          )}
+          {!loading && logs.length === 0 && (
+            <p className="text-muted-foreground">No sleep logs.</p>
+          )}
+          {logs.map((s) => (
             <div key={s.id} className="flex items-center justify-between rounded-md border p-2">
               <div>
-                <p className="font-medium">{s.date}</p>
+                <p className="font-medium">{s.entryDate ?? format(parseISO(s.createdAt), "PP")}</p>
                 <p className="text-xs text-muted-foreground">
-                  {s.bedtime} → {s.wakeTime} ({s.durationHours.toFixed(1)} h)
+                  {format(parseISO(s.bedTime), "HH:mm")} → {format(parseISO(s.wakeTime), "HH:mm")} (
+                  {((s.durationMinutes ?? 0) / 60).toFixed(1)} h)
                 </p>
               </div>
-              <Badge variant="secondary">Quality {s.quality}/5</Badge>
+              {typeof s.sleepQuality === "number" && (
+                <Badge variant="secondary">Quality {s.sleepQuality}/5</Badge>
+              )}
             </div>
           ))}
         </CardContent>
@@ -451,40 +595,58 @@ function SleepTab({ patientId }: { patientId: string }) {
 }
 
 function MoodTab({ patientId }: { patientId: string }) {
-  const moods = mockMood
-    .filter((m) => m.patientId === patientId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const [moods, setMoods] = React.useState<MoodLogResponse[]>([]);
+  const [loading, setLoading] = React.useState(true);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    listMood(patientId)
+      .then((data) => !cancelled && setMoods(data))
+      .catch(() => !cancelled && setMoods([]))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [patientId]);
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>Mood check-ins</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-sm">
-        {moods.length === 0 && <p className="text-muted-foreground">No mood check-ins.</p>}
-        {moods.map((m) => (
-          <div key={m.id} className="flex items-center justify-between rounded-md border p-2">
-            <div>
-              <p className="font-medium">{m.mood}</p>
-              {m.note && <p className="text-xs text-muted-foreground">{m.note}</p>}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {format(parseISO(m.createdAt), "PP HH:mm")}
-            </p>
+        {loading && (
+          <div className="flex items-center justify-center py-4 text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
           </div>
-        ))}
+        )}
+        {!loading && moods.length === 0 && (
+          <p className="text-muted-foreground">No mood check-ins.</p>
+        )}
+        {[...moods]
+          .sort((a, b) => b.logDate.localeCompare(a.logDate))
+          .map((m) => (
+            <div key={m.id} className="flex items-center justify-between rounded-md border p-2">
+              <div>
+                <p className="font-medium">Positivity {m.positivityScore}/10</p>
+                {m.note && <p className="text-xs text-muted-foreground">{m.note}</p>}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {format(parseISO(m.logDate), "PP HH:mm")}
+              </p>
+            </div>
+          ))}
       </CardContent>
     </Card>
   );
 }
 
 function SessionsTab({
-  patientId,
   sessions,
   notes,
 }: {
-  patientId: string;
-  sessions: ReturnType<typeof mockAppointments.filter>;
-  notes: ReturnType<typeof mockNotes.filter>;
+  sessions: AppointmentSummary[];
+  notes: NoteRow[];
 }) {
   return (
     <Card>
@@ -503,33 +665,38 @@ function SessionsTab({
             </tr>
           </thead>
           <tbody>
-            {sessions.map((s) => {
-              const note = notes.find((n) => n.appointmentId === s.id);
-              return (
-                <tr key={s.id} className="border-t">
-                  <td className="p-2 flex items-center gap-2">
-                    <Calendar className="h-3 w-3 text-muted-foreground" />
-                    {format(parseISO(s.startsAt), "PP HH:mm")}
-                  </td>
-                  <td className="p-2">{s.mode}</td>
-                  <td className="p-2">{s.status}</td>
-                  <td className="p-2">
-                    {note ? (
-                      <Link to={`/clinical-notes/${note.id}`} className="text-primary hover:underline">
-                        {note.status}
-                      </Link>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="p-2 text-right">
-                    <Button asChild size="sm" variant="ghost">
-                      <Link to={`/appointments/${s.id}`}>Open</Link>
-                    </Button>
-                  </td>
-                </tr>
-              );
-            })}
+            {[...sessions]
+              .sort((a, b) => b.startDatetime.localeCompare(a.startDatetime))
+              .map((s) => {
+                const note = notes.find((n) => n.appointmentId === s.appointmentId);
+                return (
+                  <tr key={s.appointmentId} className="border-t">
+                    <td className="p-2 flex items-center gap-2">
+                      <Calendar className="h-3 w-3 text-muted-foreground" />
+                      {format(parseISO(s.startDatetime), "PP HH:mm")}
+                    </td>
+                    <td className="p-2">{s.mode}</td>
+                    <td className="p-2">{s.status}</td>
+                    <td className="p-2">
+                      {note ? (
+                        <Link
+                          to={`/clinical-notes/${note.appointmentId}`}
+                          className="text-primary hover:underline"
+                        >
+                          Open
+                        </Link>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="p-2 text-right">
+                      <Button asChild size="sm" variant="ghost">
+                        <Link to={`/appointments/${s.appointmentId}`}>Open</Link>
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
             {sessions.length === 0 && (
               <tr>
                 <td colSpan={5} className="p-6 text-center text-muted-foreground">
