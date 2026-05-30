@@ -21,7 +21,10 @@ import {
   type ChannelMessage,
   type FriendRequestItem,
 } from "@/lib/api/social";
+import { ChatSocket } from "@/lib/api/chatSocket";
 import { getGrantStatus } from "@/lib/api/auth";
+
+type SocketStatus = "connecting" | "connected" | "disconnected" | "error";
 
 export function MessagesPage() {
   const { user } = useAuth();
@@ -41,6 +44,12 @@ export function MessagesPage() {
   } | null>(null);
   const [loadingChannels, setLoadingChannels] = React.useState(true);
   const [loadingMessages, setLoadingMessages] = React.useState(false);
+  const [socketStatus, setSocketStatus] = React.useState<SocketStatus>("connecting");
+  const socketRef = React.useRef<ChatSocket | null>(null);
+  const activeIdRef = React.useRef<string | null>(activeId);
+  React.useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -115,23 +124,87 @@ export function MessagesPage() {
       : true,
   );
 
+  // STOMP WebSocket lifecycle — one connection per page mount, kept alive while
+  // the user is on this page. Incoming frames on /user/queue/messages are
+  // appended to the relevant channel buffer.
+  React.useEffect(() => {
+    if (!user?.id) return;
+    const socket = new ChatSocket();
+    socketRef.current = socket;
+    socket.setHandlers({
+      onConnect: () => setSocketStatus("connected"),
+      onDisconnect: () => setSocketStatus("disconnected"),
+      onError: () => setSocketStatus("error"),
+      onMessage: (incoming) => {
+        setMessages((s) => {
+          const existing = s[incoming.channelId] ?? [];
+          // De-dupe by id (the server-confirmed echo replaces the optimistic row).
+          const replacedOptimistic = existing.some(
+            (m) =>
+              m.senderId === incoming.senderId &&
+              m.content === incoming.content &&
+              m.id.startsWith("local_"),
+          );
+          const filtered = replacedOptimistic
+            ? existing.filter(
+                (m) =>
+                  !(
+                    m.id.startsWith("local_") &&
+                    m.senderId === incoming.senderId &&
+                    m.content === incoming.content
+                  ),
+              )
+            : existing.filter((m) => m.id !== incoming.id);
+          return { ...s, [incoming.channelId]: [...filtered, incoming] };
+        });
+        // If we're looking at this channel right now, opportunistically mark
+        // the message read on the server.
+        if (
+          activeIdRef.current === incoming.channelId &&
+          incoming.senderId !== user.id &&
+          !incoming.read
+        ) {
+          socketRef.current?.markRead(incoming.channelId, incoming.id);
+        }
+      },
+    });
+    setSocketStatus("connecting");
+    socket.activate();
+    return () => {
+      socket.setHandlers({});
+      void socket.deactivate();
+      socketRef.current = null;
+    };
+  }, [user?.id]);
+
   const send = () => {
     if (!draft.trim() || !activeId || !channel || !user) return;
-    // WebSocket (STOMP) is the canonical send path per docs; the REST API doesn't
-    // expose a send endpoint. We optimistically render the outgoing message and
-    // leave WebSocket plumbing as a follow-up.
-    const next: ChannelMessage = {
+    const trimmed = draft.trim();
+    const socket = socketRef.current;
+    if (!socket || !socket.connected) {
+      setSocketStatus(socket ? "disconnected" : "error");
+      return;
+    }
+    // Optimistic render — the server echo arrives on /user/queue/messages and
+    // replaces this row in the onMessage handler above.
+    const optimistic: ChannelMessage = {
       id: `local_${Date.now()}`,
       channelId: activeId,
       senderId: user.id,
       senderProfilename: user.fullName,
-      content: draft.trim(),
+      content: trimmed,
       read: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    setMessages((s) => ({ ...s, [activeId]: [...(s[activeId] ?? []), next] }));
+    setMessages((s) => ({ ...s, [activeId]: [...(s[activeId] ?? []), optimistic] }));
     setDraft("");
+    try {
+      socket.send(activeId, trimmed);
+    } catch (err) {
+      console.warn("chat send failed", err);
+      setSocketStatus("error");
+    }
   };
 
   const handleAccept = async (id: string) => {
@@ -333,14 +406,30 @@ export function MessagesPage() {
                     }
                   }}
                 />
-                <Button onClick={send} disabled={!draft.trim()}>
+                <Button
+                  onClick={send}
+                  disabled={!draft.trim() || socketStatus !== "connected"}
+                >
                   <Send className="h-4 w-4" />
                 </Button>
               </div>
-              <p className="mt-2 text-[10px] text-muted-foreground">
-                Sending uses the social service WebSocket (STOMP) endpoint; a REST send endpoint is
-                not exposed. Outgoing messages render locally until the WebSocket integration is
-                wired up.
+              <p className="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <span
+                  className={`inline-block h-2 w-2 rounded-full ${
+                    socketStatus === "connected"
+                      ? "bg-success"
+                      : socketStatus === "connecting"
+                        ? "bg-warning"
+                        : "bg-destructive"
+                  }`}
+                />
+                {socketStatus === "connected"
+                  ? "Chat socket connected (STOMP)."
+                  : socketStatus === "connecting"
+                    ? "Connecting to chat socket…"
+                    : socketStatus === "disconnected"
+                      ? "Chat socket disconnected — reconnecting."
+                      : "Chat socket error — see console."}
               </p>
             </div>
           </>
