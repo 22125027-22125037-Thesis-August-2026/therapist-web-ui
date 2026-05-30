@@ -7,6 +7,7 @@ import {
   logoutApi,
   register as registerApi,
   storeSession,
+  type LicenseStatus,
   type RegisterRequest,
   type UserResponse,
 } from "@/lib/api/auth";
@@ -43,6 +44,24 @@ function persistCachedProfile(profile: TherapistProfile | null) {
   else localStorage.removeItem(PROFILE_CACHE_KEY);
 }
 
+function mapLicenseStatusToTherapistStatus(
+  licenseStatus: LicenseStatus | undefined,
+): TherapistStatus {
+  switch (licenseStatus) {
+    case "VERIFIED":
+      return "ACTIVE";
+    case "REJECTED":
+      return "SUSPENDED";
+    case "EXPIRED":
+      return "LICENSE_EXPIRED";
+    case "PENDING_VERIFICATION":
+      return "PENDING_LICENSE_VERIFICATION";
+    case undefined:
+    default:
+      return "ACTIVE";
+  }
+}
+
 function mapUserToTherapist(u: UserResponse, prev?: TherapistProfile | null): TherapistProfile {
   return {
     id: u.id,
@@ -52,15 +71,17 @@ function mapUserToTherapist(u: UserResponse, prev?: TherapistProfile | null): Th
     dob: u.dob ?? prev?.dob ?? "",
     avatarUrl: u.avatarUrl ?? prev?.avatarUrl,
     role: u.role,
-    specialization: prev?.specialization ?? "",
-    bio: prev?.bio ?? "",
-    yearsOfExperience: prev?.yearsOfExperience ?? 0,
-    consultationFee: prev?.consultationFee ?? 0,
-    licenseNumber: prev?.licenseNumber ?? "",
-    licenseAuthority: prev?.licenseAuthority ?? "",
-    licenseExpiresAt: prev?.licenseExpiresAt ?? "",
-    status: prev?.status ?? "ACTIVE",
-    languages: prev?.languages ?? ["vi", "en"],
+    specialization: u.specialization ?? prev?.specialization ?? "",
+    bio: u.bio ?? prev?.bio ?? "",
+    yearsOfExperience: u.yearsOfExperience ?? prev?.yearsOfExperience ?? 0,
+    consultationFee: u.consultationFee ?? prev?.consultationFee ?? 0,
+    licenseNumber: u.licenseNumber ?? prev?.licenseNumber ?? "",
+    licenseAuthority: u.licenseAuthority ?? prev?.licenseAuthority ?? "",
+    licenseExpiresAt: u.licenseExpiresAt ?? prev?.licenseExpiresAt ?? "",
+    status: u.licenseStatus
+      ? mapLicenseStatusToTherapistStatus(u.licenseStatus)
+      : prev?.status ?? "ACTIVE",
+    languages: u.languages ?? prev?.languages ?? ["vi", "en"],
   } as TherapistProfile;
 }
 
@@ -125,7 +146,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       await logoutApi();
     } catch {
-      // ignore — clear local state anyway
+      // ignore
     }
     clearSession();
     persist(null);
@@ -147,22 +168,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
     const auth = await registerApi(req);
     storeSession(auth.token, auth.profileId);
-    persist({
-      id: auth.profileId,
-      fullName: req.fullName,
-      email: auth.email,
-      phone: req.phoneNumber ?? "",
-      dob: req.dob ?? "",
-      specialization: req.specialization ?? "",
-      bio: req.bio ?? "",
-      yearsOfExperience: req.yearsOfExperience ?? 0,
-      consultationFee: req.consultationFee ?? 0,
-      licenseNumber: payload.licenseNumber ?? "",
-      licenseAuthority: payload.licenseAuthority ?? "",
-      licenseExpiresAt: payload.licenseExpiresAt ?? "",
-      status: "PENDING_LICENSE_VERIFICATION",
-      languages: payload.languages ?? ["vi", "en"],
-    });
+    try {
+      const me = await getMe();
+      const mapped = mapUserToTherapist(me, loadCachedProfile());
+      persist(mapped);
+    } catch {
+      persist({
+        id: auth.profileId,
+        fullName: req.fullName,
+        email: auth.email,
+        phone: req.phoneNumber ?? "",
+        dob: req.dob ?? "",
+        specialization: req.specialization ?? "",
+        bio: req.bio ?? "",
+        yearsOfExperience: req.yearsOfExperience ?? 0,
+        consultationFee: req.consultationFee ?? 0,
+        licenseNumber: payload.licenseNumber ?? "",
+        licenseAuthority: payload.licenseAuthority ?? "",
+        licenseExpiresAt: payload.licenseExpiresAt ?? "",
+        status: "PENDING_LICENSE_VERIFICATION",
+        languages: payload.languages ?? ["vi", "en"],
+      });
+    }
   };
 
   const setStatus = (status: TherapistStatus) => {

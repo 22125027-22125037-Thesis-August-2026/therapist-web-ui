@@ -13,57 +13,93 @@ import {
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { useAuth } from "@/context/AuthContext";
-import { getTherapistSlots, type SlotResponse } from "@/lib/api/therapist";
+import {
+  createSlot,
+  deleteSlot,
+  getTherapistManagedSlots,
+  type SlotResponse,
+} from "@/lib/api/therapist";
 
 const HOURS = Array.from({ length: 12 }, (_, i) => 8 + i);
 
-interface UISlot {
-  id: string;
-  startsAt: string;
-  endsAt: string;
-  isBooked: boolean;
-  bookedByPatientName?: string;
-}
-
 export function AvailabilityPage() {
   const { user } = useAuth();
-  const [weekStart, setWeekStart] = React.useState(() => startOfWeek(new Date(), { weekStartsOn: 1 }));
-  const [slots, setSlots] = React.useState<UISlot[]>([]);
+  const [weekStart, setWeekStart] = React.useState(() =>
+    startOfWeek(new Date(), { weekStartsOn: 1 }),
+  );
+  const [slots, setSlots] = React.useState<SlotResponse[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
-  const [editing, setEditing] = React.useState<UISlot | null>(null);
+  const [editing, setEditing] = React.useState<SlotResponse | null>(null);
   const [newSlotInfo, setNewSlotInfo] = React.useState<{ day: Date; hour: number } | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [duration, setDuration] = React.useState(60);
 
-  React.useEffect(() => {
+  const reload = React.useCallback(async () => {
     if (!user?.id) return;
-    let cancelled = false;
     setLoading(true);
     setError(null);
-    getTherapistSlots(user.id, { page: 0, size: 200, sort: "startDatetime,asc" })
-      .then((page) => {
-        if (cancelled) return;
-        const mapped: UISlot[] = (page.content ?? []).map((s: SlotResponse) => ({
-          id: s.slotId,
-          startsAt: s.startDatetime,
-          endsAt: s.endDatetime,
-          isBooked: false,
-        }));
-        setSlots(mapped);
-      })
-      .catch((e) => !cancelled && setError(e?.message ?? "Failed to load slots"))
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
+    try {
+      const page = await getTherapistManagedSlots(user.id, {
+        includeBooked: true,
+        page: 0,
+        size: 500,
+        sort: "startDatetime,asc",
+      });
+      setSlots(page.content ?? []);
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to load slots");
+    } finally {
+      setLoading(false);
+    }
   }, [user?.id]);
+
+  React.useEffect(() => {
+    void reload();
+  }, [reload]);
 
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
 
   const cellSlot = (day: Date, hour: number) =>
     slots.find(
       (s) =>
-        isSameDay(parseISO(s.startsAt), day) && parseISO(s.startsAt).getHours() === hour,
+        isSameDay(parseISO(s.startDatetime), day) && parseISO(s.startDatetime).getHours() === hour,
     );
+
+  const handleCreate = async () => {
+    if (!user?.id || !newSlotInfo) return;
+    setBusy(true);
+    try {
+      const start = new Date(newSlotInfo.day);
+      start.setHours(newSlotInfo.hour, 0, 0, 0);
+      const end = new Date(start.getTime() + duration * 60 * 1000);
+      await createSlot(user.id, {
+        startDatetime: start.toISOString(),
+        endDatetime: end.toISOString(),
+      });
+      setNewSlotInfo(null);
+      setDuration(60);
+      await reload();
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to create slot");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!user?.id || !editing) return;
+    setBusy(true);
+    try {
+      await deleteSlot(user.id, editing.slotId);
+      setEditing(null);
+      await reload();
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to delete slot");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -71,7 +107,7 @@ export function AvailabilityPage() {
         <div>
           <h1 className="text-2xl font-semibold">Availability</h1>
           <p className="text-sm text-muted-foreground">
-            Patients can book any slot you publish here. Booked slots are read-only.
+            Patients can book any open slot. Booked slots are read-only here.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -84,7 +120,11 @@ export function AvailabilityPage() {
           <Button variant="outline" size="sm" onClick={() => setWeekStart(addWeeks(weekStart, 1))}>
             <ChevronRight className="h-4 w-4" />
           </Button>
-          <Button variant="secondary" size="sm" onClick={() => setWeekStart(startOfWeek(new Date(), { weekStartsOn: 1 }))}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setWeekStart(startOfWeek(new Date(), { weekStartsOn: 1 }))}
+          >
             This week
           </Button>
         </div>
@@ -135,14 +175,32 @@ export function AvailabilityPage() {
                             {slot ? (
                               <button
                                 onClick={() => setEditing(slot)}
-                                className="h-full w-full rounded-sm bg-success/15 px-1.5 text-left text-xs font-medium text-success hover:bg-success/25"
+                                className={`h-full w-full rounded-sm px-1.5 text-left text-xs font-medium ${
+                                  slot.isBooked
+                                    ? "bg-primary text-primary-foreground"
+                                    : "bg-success/15 text-success hover:bg-success/25"
+                                }`}
                               >
-                                <div>Available</div>
-                                <div className="text-[10px] opacity-70">Click to view</div>
+                                {slot.isBooked ? (
+                                  <>
+                                    <div className="truncate">
+                                      {slot.bookedByPatientName ?? "Booked"}
+                                    </div>
+                                    <div className="text-[10px] opacity-80">Booked</div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div>Available</div>
+                                    <div className="text-[10px] opacity-70">Click to edit</div>
+                                  </>
+                                )}
                               </button>
                             ) : (
                               <button
-                                onClick={() => setNewSlotInfo({ day: d, hour: h })}
+                                onClick={() => {
+                                  setNewSlotInfo({ day: d, hour: h });
+                                  setDuration(60);
+                                }}
                                 className="grid h-full w-full place-items-center rounded-sm text-muted-foreground/40 hover:bg-accent hover:text-primary"
                                 aria-label={`Add slot on ${format(d, "PP")} at ${h}:00`}
                               >
@@ -163,33 +221,42 @@ export function AvailabilityPage() {
 
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <LegendDot className="bg-success/40" label="Available" />
+        <LegendDot className="bg-primary" label="Booked" />
         <span className="text-muted-foreground">
-          Note: backend endpoints to create, update, or delete availability slots are not yet
-          implemented. See <code>docs/Missing API endpoints.md</code>.
+          Tip: click an empty cell to add a slot, click an existing one to view or delete.
         </span>
       </div>
 
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Available slot</DialogTitle>
+            <DialogTitle>{editing?.isBooked ? "Booked slot" : "Available slot"}</DialogTitle>
           </DialogHeader>
           {editing && (
             <div className="space-y-3 text-sm">
               <p>
-                {format(parseISO(editing.startsAt), "EEEE, d LLL")} ·{" "}
-                {format(parseISO(editing.startsAt), "HH:mm")}–
-                {format(parseISO(editing.endsAt), "HH:mm")}
+                {format(parseISO(editing.startDatetime), "EEEE, d LLL")} ·{" "}
+                {format(parseISO(editing.startDatetime), "HH:mm")}–
+                {format(parseISO(editing.endDatetime), "HH:mm")}
               </p>
-              <p className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
-                Editing or deleting availability slots is not yet supported by the backend.
-              </p>
+              {editing.isBooked ? (
+                <p className="rounded-md border bg-muted p-2 text-muted-foreground">
+                  Patient:{" "}
+                  <span className="font-medium">{editing.bookedByPatientName ?? "—"}</span>.
+                  Booked slots cannot be edited or deleted.
+                </p>
+              ) : (
+                <p className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+                  Delete to free this time. Reschedule by deleting and re-creating at a new time.
+                </p>
+              )}
             </div>
           )}
           <DialogFooter>
-            {editing && (
-              <Button variant="destructive" disabled>
-                <Trash2 className="h-4 w-4" /> Delete slot
+            {editing && !editing.isBooked && (
+              <Button variant="destructive" onClick={handleDelete} disabled={busy}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                Delete slot
               </Button>
             )}
             <Button variant="ghost" onClick={() => setEditing(null)}>
@@ -210,28 +277,26 @@ export function AvailabilityPage() {
                 {format(newSlotInfo.day, "EEEE, d LLL")} at{" "}
                 {String(newSlotInfo.hour).padStart(2, "0")}:00
               </p>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label>Duration (min)</Label>
-                  <Input type="number" defaultValue={60} step={15} />
-                </div>
-                <div>
-                  <Label>Buffer (min)</Label>
-                  <Input type="number" defaultValue={10} step={5} />
-                </div>
+              <div>
+                <Label>Duration (min)</Label>
+                <Input
+                  type="number"
+                  min={15}
+                  step={15}
+                  value={duration}
+                  onChange={(e) => setDuration(Number(e.target.value) || 60)}
+                />
               </div>
-              <p className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
-                Slot creation endpoint is not yet implemented. Use the
-                <code className="mx-1">POST /api/v1/test/trigger-generation</code>
-                test endpoint to populate slots in development.
-              </p>
             </div>
           )}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setNewSlotInfo(null)}>
               Cancel
             </Button>
-            <Button disabled>Add slot</Button>
+            <Button onClick={handleCreate} disabled={busy}>
+              {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+              Add slot
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

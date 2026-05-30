@@ -1,6 +1,6 @@
 import * as React from "react";
 import { format, parseISO } from "date-fns";
-import { Loader2 } from "lucide-react";
+import { Loader2, ShieldCheck, ShieldAlert } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
@@ -10,12 +10,19 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/context/AuthContext";
 import { useI18n } from "@/context/I18nContext";
-import { updateProfile, uploadAvatar } from "@/lib/api/auth";
+import {
+  changePassword,
+  getLicense,
+  renewLicense,
+  updateProfile,
+  uploadAvatar,
+  type LicenseResponse,
+} from "@/lib/api/auth";
 
 export function SettingsPage() {
   const { user, updateUser } = useAuth();
   const { lang, setLang } = useI18n();
-  const [saving, setSaving] = React.useState(false);
+  const [savingProfile, setSavingProfile] = React.useState(false);
   const [uploadingAvatar, setUploadingAvatar] = React.useState(false);
   const [message, setMessage] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -24,6 +31,11 @@ export function SettingsPage() {
     fullName: user?.fullName ?? "",
     phoneNumber: user?.phone ?? "",
     avatarUrl: user?.avatarUrl ?? "",
+    specialization: user?.specialization ?? "",
+    bio: user?.bio ?? "",
+    yearsOfExperience: user?.yearsOfExperience ?? 0,
+    consultationFee: user?.consultationFee ?? 0,
+    languages: (user?.languages ?? []).join(", "),
   }));
 
   React.useEffect(() => {
@@ -32,6 +44,11 @@ export function SettingsPage() {
         fullName: user.fullName,
         phoneNumber: user.phone,
         avatarUrl: user.avatarUrl ?? "",
+        specialization: user.specialization ?? "",
+        bio: user.bio ?? "",
+        yearsOfExperience: user.yearsOfExperience,
+        consultationFee: user.consultationFee,
+        languages: user.languages.join(", "),
       });
     }
   }, [user]);
@@ -39,7 +56,7 @@ export function SettingsPage() {
   if (!user) return null;
 
   const handleSaveProfile = async () => {
-    setSaving(true);
+    setSavingProfile(true);
     setError(null);
     setMessage(null);
     try {
@@ -47,17 +64,31 @@ export function SettingsPage() {
         fullName: form.fullName,
         phoneNumber: form.phoneNumber,
         avatarUrl: form.avatarUrl || undefined,
+        specialization: form.specialization || undefined,
+        bio: form.bio || undefined,
+        yearsOfExperience: Number(form.yearsOfExperience),
+        consultationFee: Number(form.consultationFee),
+        languages: form.languages
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
       });
       updateUser({
         fullName: updated.fullName,
         phone: updated.phoneNumber ?? form.phoneNumber,
         avatarUrl: updated.avatarUrl ?? form.avatarUrl,
+        specialization: updated.specialization ?? form.specialization,
+        bio: updated.bio ?? form.bio,
+        yearsOfExperience: updated.yearsOfExperience ?? Number(form.yearsOfExperience),
+        consultationFee: updated.consultationFee ?? Number(form.consultationFee),
+        languages:
+          updated.languages ?? form.languages.split(",").map((s) => s.trim()).filter(Boolean),
       });
       setMessage("Profile updated.");
     } catch (e: any) {
       setError(e?.message ?? "Failed to update profile");
     } finally {
-      setSaving(false);
+      setSavingProfile(false);
     }
   };
 
@@ -83,7 +114,7 @@ export function SettingsPage() {
       <div>
         <h1 className="text-2xl font-semibold">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Manage your profile, availability defaults, notifications, and security.
+          Manage your profile, license, notifications, and security.
         </p>
       </div>
 
@@ -101,7 +132,6 @@ export function SettingsPage() {
       <Tabs defaultValue="profile">
         <TabsList>
           <TabsTrigger value="profile">Profile</TabsTrigger>
-          <TabsTrigger value="availability">Availability</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="license">License</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
@@ -152,44 +182,56 @@ export function SettingsPage() {
                   </label>
                 </div>
               </div>
-
-              <div className="md:col-span-2 text-xs text-muted-foreground">
-                Specialization, bio, years of experience, consultation fee and languages are
-                captured on registration but are not yet exposed by the
-                <code className="mx-1">PATCH /api/v1/auth/profile</code>
-                endpoint.
-              </div>
-
               <div className="md:col-span-2">
-                <Button onClick={handleSaveProfile} disabled={saving}>
-                  {saving && <Loader2 className="h-4 w-4 animate-spin" />}
+                <Label>Specialization</Label>
+                <Input
+                  value={form.specialization}
+                  onChange={(e) => setForm((f) => ({ ...f, specialization: e.target.value }))}
+                />
+              </div>
+              <div>
+                <Label>Years of experience</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={form.yearsOfExperience}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, yearsOfExperience: Number(e.target.value) }))
+                  }
+                />
+              </div>
+              <div>
+                <Label>Consultation fee (VND)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step={50000}
+                  value={form.consultationFee}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, consultationFee: Number(e.target.value) }))
+                  }
+                />
+              </div>
+              <div className="md:col-span-2">
+                <Label>Languages (comma-separated, e.g. vi, en)</Label>
+                <Input
+                  value={form.languages}
+                  onChange={(e) => setForm((f) => ({ ...f, languages: e.target.value }))}
+                />
+              </div>
+              <div className="md:col-span-2">
+                <Label>Bio</Label>
+                <Textarea
+                  rows={4}
+                  value={form.bio}
+                  onChange={(e) => setForm((f) => ({ ...f, bio: e.target.value }))}
+                />
+              </div>
+              <div className="md:col-span-2">
+                <Button onClick={handleSaveProfile} disabled={savingProfile}>
+                  {savingProfile && <Loader2 className="h-4 w-4 animate-spin" />}
                   Save changes
                 </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="availability">
-          <Card>
-            <CardHeader>
-              <CardTitle>Default session settings</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm text-muted-foreground">
-              <p>
-                The backend does not yet expose endpoints for therapist availability defaults
-                (session length, buffer, templates). See
-                <code className="mx-1">docs/Missing API endpoints.md</code>.
-              </p>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <Label>Default session length (min)</Label>
-                  <Input type="number" defaultValue={50} step={5} disabled />
-                </div>
-                <div>
-                  <Label>Buffer between sessions (min)</Label>
-                  <Input type="number" defaultValue={10} step={5} disabled />
-                </div>
               </div>
             </CardContent>
           </Card>
@@ -202,77 +244,23 @@ export function SettingsPage() {
             </CardHeader>
             <CardContent className="space-y-3 text-sm text-muted-foreground">
               <p>
-                Notification preferences (per-channel toggles) are not yet exposed by the
-                notification service. The inbox is populated via{" "}
-                <code>GET /api/v1/notifications/&#123;profileId&#125;</code> with no per-user
-                preferences endpoint.
+                You receive every kind of notification — bookings, cancellations, new messages,
+                permission grants, mood alerts, and license-renewal reminders. Per-channel
+                toggles are not currently available.
+              </p>
+              <p className="text-xs">
+                View all notifications from the bell icon in the top bar.
               </p>
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="license">
-          <Card>
-            <CardHeader>
-              <CardTitle>License</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3 text-sm">
-              {user.licenseNumber ? (
-                <div className="rounded-md border p-3">
-                  <p className="font-medium">{user.licenseNumber}</p>
-                  <p className="text-xs text-muted-foreground">
-                    Issued by {user.licenseAuthority}
-                  </p>
-                  {user.licenseExpiresAt && (
-                    <p className="mt-1 text-xs">
-                      Expires{" "}
-                      <strong>{format(parseISO(user.licenseExpiresAt), "PP")}</strong>
-                    </p>
-                  )}
-                  <div className="mt-3 flex items-center gap-2">
-                    <Badge variant="success">
-                      {user.status === "ACTIVE" ? "Verified" : user.status}
-                    </Badge>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-muted-foreground">
-                  License records are not exposed by{" "}
-                  <code>GET /api/v1/auth/me</code> yet. They are captured at registration but
-                  not retrievable from the API.
-                </p>
-              )}
-            </CardContent>
-          </Card>
+          <LicenseTab />
         </TabsContent>
 
         <TabsContent value="security">
-          <Card>
-            <CardHeader>
-              <CardTitle>Security</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4 text-sm text-muted-foreground">
-              <p>
-                Password change and session-management endpoints are not exposed by the auth
-                service yet. See <code>docs/Missing API endpoints.md</code>.
-              </p>
-              <div className="grid gap-4 md:grid-cols-3 opacity-50">
-                <div>
-                  <Label>Current password</Label>
-                  <Input type="password" disabled />
-                </div>
-                <div>
-                  <Label>New password</Label>
-                  <Input type="password" disabled />
-                </div>
-                <div>
-                  <Label>Confirm</Label>
-                  <Input type="password" disabled />
-                </div>
-              </div>
-              <Button disabled>Change password</Button>
-            </CardContent>
-          </Card>
+          <SecurityTab />
         </TabsContent>
 
         <TabsContent value="language">
@@ -291,14 +279,242 @@ export function SettingsPage() {
           </Card>
         </TabsContent>
       </Tabs>
-
-      <div className="text-xs text-muted-foreground">Bio area</div>
-      <Card>
-        <CardContent className="pt-4">
-          <Label>Bio (read-only)</Label>
-          <Textarea rows={4} value={user.bio} disabled />
-        </CardContent>
-      </Card>
     </div>
+  );
+}
+
+function LicenseTab() {
+  const [license, setLicense] = React.useState<LicenseResponse | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [renewLicenseNumber, setRenewLicenseNumber] = React.useState("");
+  const [renewAuthority, setRenewAuthority] = React.useState("");
+  const [renewExpiresAt, setRenewExpiresAt] = React.useState("");
+  const [renewFile, setRenewFile] = React.useState<File | null>(null);
+  const [renewMsg, setRenewMsg] = React.useState<string | null>(null);
+
+  const reload = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const lic = await getLicense();
+      setLicense(lic);
+      setRenewLicenseNumber(lic.licenseNumber ?? "");
+      setRenewAuthority(lic.licenseAuthority ?? "");
+      setRenewExpiresAt(lic.licenseExpiresAt ?? "");
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to load license");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const handleSubmit = async () => {
+    setBusy(true);
+    setError(null);
+    setRenewMsg(null);
+    try {
+      const updated = await renewLicense({
+        document: renewFile ?? undefined,
+        licenseNumber: renewLicenseNumber || undefined,
+        licenseAuthority: renewAuthority || undefined,
+        licenseExpiresAt: renewExpiresAt || undefined,
+      });
+      setLicense(updated);
+      setRenewFile(null);
+      setRenewMsg("Renewal submitted. License is now PENDING_VERIFICATION.");
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to submit renewal");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>License</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        {loading ? (
+          <div className="flex items-center justify-center py-6 text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+          </div>
+        ) : error ? (
+          <p className="text-destructive">{error}</p>
+        ) : license ? (
+          <div className="rounded-md border p-3">
+            <p className="font-medium">{license.licenseNumber ?? "—"}</p>
+            <p className="text-xs text-muted-foreground">
+              Issued by {license.licenseAuthority ?? "—"}
+            </p>
+            {license.licenseExpiresAt && (
+              <p className="mt-1 text-xs">
+                Expires{" "}
+                <strong>{format(parseISO(license.licenseExpiresAt), "PP")}</strong>
+              </p>
+            )}
+            <div className="mt-2 flex items-center gap-2">
+              <LicenseStatusBadge status={license.status} />
+              {license.documentUrl && (
+                <Button asChild size="sm" variant="link" className="h-auto p-0 text-xs">
+                  <a href={license.documentUrl} target="_blank" rel="noreferrer">
+                    View document
+                  </a>
+                </Button>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {renewMsg && (
+          <div className="rounded-md border border-success/40 bg-success/5 p-3 text-xs text-success">
+            {renewMsg}
+          </div>
+        )}
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <div>
+            <Label>License number</Label>
+            <Input
+              value={renewLicenseNumber}
+              onChange={(e) => setRenewLicenseNumber(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label>Issuing authority</Label>
+            <Input value={renewAuthority} onChange={(e) => setRenewAuthority(e.target.value)} />
+          </div>
+          <div>
+            <Label>Expires at</Label>
+            <Input
+              type="date"
+              value={renewExpiresAt}
+              onChange={(e) => setRenewExpiresAt(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label>Renewal document (PDF / JPG / PNG)</Label>
+            <Input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png"
+              onChange={(e) => setRenewFile(e.target.files?.[0] ?? null)}
+            />
+          </div>
+        </div>
+
+        <Button onClick={handleSubmit} disabled={busy}>
+          {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+          Submit renewal
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LicenseStatusBadge({ status }: { status: LicenseResponse["status"] }) {
+  if (status === "VERIFIED")
+    return (
+      <Badge variant="success" className="gap-1">
+        <ShieldCheck className="h-3 w-3" /> Verified
+      </Badge>
+    );
+  if (status === "PENDING_VERIFICATION")
+    return (
+      <Badge variant="warning" className="gap-1">
+        <ShieldAlert className="h-3 w-3" /> Pending review
+      </Badge>
+    );
+  if (status === "REJECTED")
+    return (
+      <Badge variant="destructive" className="gap-1">
+        <ShieldAlert className="h-3 w-3" /> Rejected
+      </Badge>
+    );
+  return (
+    <Badge variant="destructive" className="gap-1">
+      <ShieldAlert className="h-3 w-3" /> Expired
+    </Badge>
+  );
+}
+
+function SecurityTab() {
+  const [currentPassword, setCurrentPassword] = React.useState("");
+  const [newPassword, setNewPassword] = React.useState("");
+  const [confirm, setConfirm] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [message, setMessage] = React.useState<string | null>(null);
+
+  const handleChange = async () => {
+    setError(null);
+    setMessage(null);
+    if (newPassword.length < 8) {
+      setError("New password must be at least 8 characters.");
+      return;
+    }
+    if (newPassword !== confirm) {
+      setError("New password and confirmation do not match.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await changePassword({ currentPassword, newPassword });
+      setMessage("Password changed successfully.");
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirm("");
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to change password");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Security</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {message && <p className="text-sm text-success">{message}</p>}
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        <div className="grid gap-4 md:grid-cols-3">
+          <div>
+            <Label>Current password</Label>
+            <Input
+              type="password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label>New password</Label>
+            <Input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+            />
+          </div>
+          <div>
+            <Label>Confirm</Label>
+            <Input
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+            />
+          </div>
+        </div>
+        <Button onClick={handleChange} disabled={busy || !currentPassword || !newPassword}>
+          {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+          Change password
+        </Button>
+      </CardContent>
+    </Card>
   );
 }

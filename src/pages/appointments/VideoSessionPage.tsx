@@ -7,19 +7,17 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import {
+  getAppointmentDetail,
   joinSession,
+  type AppointmentDetail,
   type JoinSessionResponse,
 } from "@/lib/api/therapist";
-import {
-  fetchTherapistAppointments,
-  type AppointmentRow,
-} from "@/lib/api/therapistAppointments";
 import { listDiary, type DiaryEntryResponse } from "@/lib/api/tracking";
 
 export function VideoSessionPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [appt, setAppt] = React.useState<AppointmentRow | null>(null);
+  const [appt, setAppt] = React.useState<AppointmentDetail | null>(null);
   const [join, setJoin] = React.useState<JoinSessionResponse | null>(null);
   const [diary, setDiary] = React.useState<DiaryEntryResponse[]>([]);
   const [scratch, setScratch] = React.useState("");
@@ -39,23 +37,18 @@ export function VideoSessionPage() {
     setLoading(true);
     (async () => {
       try {
-        const [{ appointments }, joinRes] = await Promise.all([
-          fetchTherapistAppointments(),
-          joinSession(id).catch((e) => {
-            throw e;
-          }),
+        const [a, joinRes] = await Promise.all([
+          getAppointmentDetail(id),
+          joinSession(id),
         ]);
-        const a = appointments.find((x) => x.appointmentId === id) ?? null;
         if (cancelled) return;
         setAppt(a);
         setJoin(joinRes);
-        if (a) {
-          try {
-            const d = await listDiary(a.patientId);
-            if (!cancelled) setDiary(d.slice(0, 5));
-          } catch {
-            // permission may not be granted
-          }
+        try {
+          const d = await listDiary(a.profileId);
+          if (!cancelled) setDiary(d.slice(0, 5));
+        } catch {
+          // permission may not be granted
         }
       } catch (e: any) {
         if (!cancelled) setError(e?.message ?? "Failed to start session");
@@ -97,7 +90,8 @@ export function VideoSessionPage() {
           </Link>
         </Button>
         <div className="text-sm text-muted-foreground">
-          {appt.patientName} · {format(parseISO(appt.startDatetime), "HH:mm")}
+          {appt.patientName ?? appt.profileId.slice(0, 8)} ·{" "}
+          {format(parseISO(appt.startDatetime), "HH:mm")}
         </div>
         <Button
           variant="destructive"
@@ -129,11 +123,9 @@ export function VideoSessionPage() {
         <aside className="w-96 shrink-0 space-y-3 overflow-y-auto scrollbar-thin border-l bg-card p-4">
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm">Session info</CardTitle>
+              <CardTitle className="text-sm">Patient's reason</CardTitle>
             </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              Slot {appt.slotId.slice(0, 8)} · Mode {appt.mode}
-            </CardContent>
+            <CardContent className="text-sm">{appt.reason ?? "—"}</CardContent>
           </Card>
 
           <Card>

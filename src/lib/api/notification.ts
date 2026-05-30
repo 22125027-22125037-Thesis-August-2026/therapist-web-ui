@@ -23,43 +23,39 @@ export interface NotificationPage {
 }
 
 export function listNotifications(profileId: string, page = 0, size = 20) {
-  return apiFetch<NotificationPage>(`/api/v1/notifications/${profileId}`, {
-    service: "notification",
+  return apiFetch<NotificationPage>(`/api/v1/notification/notifications/${profileId}`, {
     method: "GET",
     query: { page, size },
-    auth: false,
   });
 }
 
 export function markNotificationRead(notificationId: string) {
   return apiFetch<{ notificationId: string; read: boolean }>(
-    `/api/v1/notifications/${notificationId}/read`,
-    { service: "notification", method: "PUT", auth: false },
+    `/api/v1/notification/notifications/${notificationId}/read`,
+    { method: "PUT" },
   );
 }
 
 export function markAllNotificationsRead(profileId: string) {
   return apiFetch<{ profileId: string; updatedCount: number }>(
-    `/api/v1/notifications/${profileId}/read-all`,
-    { service: "notification", method: "PUT", auth: false },
+    `/api/v1/notification/notifications/${profileId}/read-all`,
+    { method: "PUT" },
   );
 }
 
 export function registerDevice(payload: {
-  profileId: string;
   deviceToken: string;
   platform: "ANDROID" | "IOS" | "WEB";
 }) {
   return apiFetch<{ profileId: string; platform: string; lastSeenAt: string }>(
-    "/api/v1/devices",
-    { service: "notification", method: "POST", body: payload, auth: false },
+    "/api/v1/notification/devices",
+    { method: "POST", body: payload },
   );
 }
 
 export function deregisterDevice(deviceToken: string) {
-  return apiFetch<void>(`/api/v1/devices/${encodeURIComponent(deviceToken)}`, {
-    service: "notification",
-    method: "DELETE",
-    auth: false,
-  });
+  return apiFetch<void>(
+    `/api/v1/notification/devices/${encodeURIComponent(deviceToken)}`,
+    { method: "DELETE" },
+  );
 }

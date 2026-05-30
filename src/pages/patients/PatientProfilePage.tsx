@@ -5,9 +5,11 @@ import {
   Calendar,
   Loader2,
   Mail,
+  Phone,
   ShieldAlert,
   ShieldCheck,
   Tag,
+  X,
 } from "lucide-react";
 import {
   BarChart,
@@ -28,8 +30,22 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { LockedCard } from "@/components/LockedCard";
+import { RiskBadge } from "@/components/StatusBadge";
 import { initials } from "@/lib/utils";
-import { getGrantStatus, getProfileSummary, type ProfileSummary } from "@/lib/api/auth";
+import {
+  getAppointmentHistory,
+  getPatientMatchingPreferences,
+  getPatientRiskLevel,
+  getPatientTags,
+  getUpcomingAppointment,
+  listClinicalNotes,
+  type AppointmentSummary,
+  type ClinicalNoteResponse,
+  type MatchingPreferencesResponse,
+  updatePatientRiskLevel,
+  updatePatientTags,
+} from "@/lib/api/therapist";
+import { getGrantStatus, getPatientDetail, type PatientDetailResponse } from "@/lib/api/auth";
 import {
   listDiary,
   listFood,
@@ -40,25 +56,16 @@ import {
   type MoodLogResponse,
   type SleepLogResponse,
 } from "@/lib/api/tracking";
-import {
-  getAppointmentHistory,
-  getUpcomingAppointment,
-  getClinicalNoteByAppointment,
-  type AppointmentSummary,
-  type ClinicalNoteResponse,
-} from "@/lib/api/therapist";
 import { ApiError } from "@/lib/api/http";
 
-interface NoteRow extends ClinicalNoteResponse {
-  appointmentDate: string;
-}
+type RiskLevelValue = "NONE" | "LOW" | "MEDIUM" | "HIGH";
 
 export function PatientProfilePage() {
   const { id } = useParams();
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") ?? "overview";
 
-  const [profile, setProfile] = React.useState<ProfileSummary | null>(null);
+  const [profile, setProfile] = React.useState<PatientDetailResponse | null>(null);
   const [grantStatus, setGrantStatus] = React.useState<{
     theyGaveMeAccess: boolean;
     iGaveThemAccess: boolean;
@@ -67,7 +74,13 @@ export function PatientProfilePage() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [sessions, setSessions] = React.useState<AppointmentSummary[]>([]);
-  const [notes, setNotes] = React.useState<NoteRow[]>([]);
+  const [notes, setNotes] = React.useState<ClinicalNoteResponse[]>([]);
+  const [tags, setTags] = React.useState<string[]>([]);
+  const [tagDraft, setTagDraft] = React.useState("");
+  const [riskLevel, setRiskLevel] = React.useState<RiskLevelValue>("NONE");
+  const [matchingPrefs, setMatchingPrefs] = React.useState<MatchingPreferencesResponse | null>(
+    null,
+  );
 
   React.useEffect(() => {
     if (!id) return;
@@ -76,11 +89,17 @@ export function PatientProfilePage() {
     setError(null);
     (async () => {
       try {
-        const [p, gs, upcoming, history] = await Promise.all([
-          getProfileSummary(id).catch(() => null),
+        const [p, gs, upcoming, history, notesPage, tagsR, riskR, matchingR] = await Promise.all([
+          getPatientDetail(id).catch(() => null),
           getGrantStatus(id).catch(() => null),
           getUpcomingAppointment(id).catch(() => null),
           getAppointmentHistory(id).catch(() => [] as AppointmentSummary[]),
+          listClinicalNotes({ patientId: id, page: 0, size: 50 }).catch(
+            () => ({ content: [] }) as { content: ClinicalNoteResponse[] },
+          ),
+          getPatientTags(id).catch(() => null),
+          getPatientRiskLevel(id).catch(() => null),
+          getPatientMatchingPreferences(id).catch(() => null),
         ]);
         if (cancelled) return;
         if (p) setProfile(p);
@@ -91,34 +110,19 @@ export function PatientProfilePage() {
             expiresAt: gs.data.theirGrant?.expiresAt,
           });
         }
-        const allSessions = [
-          ...(upcoming ? [upcoming] : []),
-          ...history,
-        ];
-        // dedupe
+        const all = [...(upcoming ? [upcoming] : []), ...history];
         const seen = new Set<string>();
-        const merged = allSessions.filter((a) => {
-          if (seen.has(a.appointmentId)) return false;
-          seen.add(a.appointmentId);
-          return true;
-        });
-        setSessions(merged);
-
-        const completed = merged.filter((s) => s.status === "COMPLETED");
-        const noteResults = await Promise.allSettled(
-          completed.map((s) =>
-            getClinicalNoteByAppointment(s.appointmentId).then((n) => ({
-              ...n,
-              appointmentDate: s.startDatetime,
-            })),
-          ),
+        setSessions(
+          all.filter((a) => {
+            if (seen.has(a.appointmentId)) return false;
+            seen.add(a.appointmentId);
+            return true;
+          }),
         );
-        if (cancelled) return;
-        setNotes(
-          noteResults
-            .filter((r): r is PromiseFulfilledResult<NoteRow> => r.status === "fulfilled")
-            .map((r) => r.value),
-        );
+        setNotes(notesPage.content ?? []);
+        if (tagsR) setTags(tagsR.tags);
+        if (riskR) setRiskLevel(riskR.riskLevel);
+        if (matchingR) setMatchingPrefs(matchingR);
       } catch (e: any) {
         if (!cancelled) setError(e?.message ?? "Failed to load patient");
       } finally {
@@ -129,6 +133,50 @@ export function PatientProfilePage() {
       cancelled = true;
     };
   }, [id]);
+
+  const handleAddTag = async () => {
+    const t = tagDraft.trim().toLowerCase();
+    if (!t || !id || tags.includes(t)) {
+      setTagDraft("");
+      return;
+    }
+    const next = [...tags, t];
+    setTags(next);
+    setTagDraft("");
+    try {
+      const res = await updatePatientTags(id, next);
+      setTags(res.tags);
+    } catch (e) {
+      // revert
+      setTags(tags);
+      console.warn("update tags failed", e);
+    }
+  };
+
+  const handleRemoveTag = async (t: string) => {
+    if (!id) return;
+    const next = tags.filter((x) => x !== t);
+    setTags(next);
+    try {
+      const res = await updatePatientTags(id, next);
+      setTags(res.tags);
+    } catch (e) {
+      setTags(tags);
+      console.warn("update tags failed", e);
+    }
+  };
+
+  const handleRiskChange = async (next: RiskLevelValue) => {
+    if (!id) return;
+    const prev = riskLevel;
+    setRiskLevel(next);
+    try {
+      await updatePatientRiskLevel(id, next);
+    } catch (e) {
+      setRiskLevel(prev);
+      console.warn("update risk level failed", e);
+    }
+  };
 
   if (loading) {
     return (
@@ -143,7 +191,7 @@ export function PatientProfilePage() {
   }
 
   const granted = !!grantStatus?.theyGaveMeAccess;
-  const fullName = profile.name;
+  const fullName = profile.fullName;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
@@ -157,7 +205,27 @@ export function PatientProfilePage() {
               </Avatar>
               <div>
                 <h2 className="font-semibold">{fullName}</h2>
-                <p className="text-xs text-muted-foreground">{profile.role}</p>
+                <p className="text-xs text-muted-foreground">
+                  {profile.age != null && `Age ${profile.age}`}
+                  {profile.gender && ` · ${profile.gender.toLowerCase()}`}
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <RiskBadge level={riskLevel} />
+              <div className="mt-2 flex gap-1">
+                {(["NONE", "LOW", "MEDIUM", "HIGH"] as const).map((r) => (
+                  <Button
+                    key={r}
+                    size="sm"
+                    variant={riskLevel === r ? "default" : "outline"}
+                    className="h-6 px-2 text-[10px]"
+                    onClick={() => handleRiskChange(r)}
+                  >
+                    {r}
+                  </Button>
+                ))}
               </div>
             </div>
 
@@ -167,7 +235,22 @@ export function PatientProfilePage() {
                   <Mail className="h-3 w-3" /> {profile.email}
                 </div>
               )}
+              {profile.phoneNumber && (
+                <div className="flex items-center gap-2">
+                  <Phone className="h-3 w-3" /> {profile.phoneNumber}
+                </div>
+              )}
+              {profile.school && (
+                <div className="text-muted-foreground">School: {profile.school}</div>
+              )}
             </div>
+
+            {profile.emergencyContact && (
+              <div className="rounded-md border bg-warning/5 p-2 text-xs">
+                <p className="font-medium">Emergency contact</p>
+                <p className="text-muted-foreground">{profile.emergencyContact}</p>
+              </div>
+            )}
 
             <Separator />
 
@@ -194,9 +277,6 @@ export function PatientProfilePage() {
                       <ShieldAlert className="h-3.5 w-3.5 text-muted-foreground" />
                       No data access granted
                     </div>
-                    <p className="mt-1 text-muted-foreground">
-                      Therapist-initiated access requests are not yet supported by the API.
-                    </p>
                   </div>
                 )}
               </div>
@@ -208,9 +288,38 @@ export function PatientProfilePage() {
               <p className="mb-2 flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
                 <Tag className="h-3 w-3" /> Tags
               </p>
-              <p className="text-xs text-muted-foreground">
-                Patient tagging is not yet supported by the backend.
-              </p>
+              <div className="flex flex-wrap items-center gap-1">
+                {tags.map((t) => (
+                  <Badge key={t} variant="secondary" className="gap-1">
+                    {t}
+                    <button
+                      type="button"
+                      aria-label={`Remove tag ${t}`}
+                      className="ml-0.5 inline-flex"
+                      onClick={() => handleRemoveTag(t)}
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+              <div className="mt-2 flex gap-1">
+                <Input
+                  placeholder="Add tag…"
+                  value={tagDraft}
+                  onChange={(e) => setTagDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleAddTag();
+                    }
+                  }}
+                  className="h-7 text-xs"
+                />
+                <Button size="sm" variant="outline" className="h-7 px-2" onClick={handleAddTag}>
+                  Add
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -229,7 +338,11 @@ export function PatientProfilePage() {
           </TabsList>
 
           <TabsContent value="overview">
-            <OverviewTab profile={profile} sessions={sessions} />
+            <OverviewTab
+              profile={profile}
+              sessions={sessions}
+              matchingPrefs={matchingPrefs}
+            />
           </TabsContent>
 
           <TabsContent value="notes">
@@ -237,32 +350,16 @@ export function PatientProfilePage() {
           </TabsContent>
 
           <TabsContent value="diary">
-            {granted ? (
-              <DiaryTab patientId={id} />
-            ) : (
-              <LockedCard patientName={fullName} />
-            )}
+            {granted ? <DiaryTab patientId={id} /> : <LockedCard patientName={fullName} />}
           </TabsContent>
           <TabsContent value="food">
-            {granted ? (
-              <FoodTab patientId={id} />
-            ) : (
-              <LockedCard patientName={fullName} />
-            )}
+            {granted ? <FoodTab patientId={id} /> : <LockedCard patientName={fullName} />}
           </TabsContent>
           <TabsContent value="sleep">
-            {granted ? (
-              <SleepTab patientId={id} />
-            ) : (
-              <LockedCard patientName={fullName} />
-            )}
+            {granted ? <SleepTab patientId={id} /> : <LockedCard patientName={fullName} />}
           </TabsContent>
           <TabsContent value="mood">
-            {granted ? (
-              <MoodTab patientId={id} />
-            ) : (
-              <LockedCard patientName={fullName} />
-            )}
+            {granted ? <MoodTab patientId={id} /> : <LockedCard patientName={fullName} />}
           </TabsContent>
 
           <TabsContent value="sessions">
@@ -277,9 +374,11 @@ export function PatientProfilePage() {
 function OverviewTab({
   profile,
   sessions,
+  matchingPrefs,
 }: {
-  profile: ProfileSummary;
+  profile: PatientDetailResponse;
   sessions: AppointmentSummary[];
+  matchingPrefs: MatchingPreferencesResponse | null;
 }) {
   const lastSession = sessions
     .filter((s) => s.status === "COMPLETED")
@@ -296,14 +395,17 @@ function OverviewTab({
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
           <p>
-            <span className="text-muted-foreground">Name:</span> {profile.name}
+            <span className="text-muted-foreground">Name:</span> {profile.fullName}
           </p>
           <p>
             <span className="text-muted-foreground">Email:</span> {profile.email}
           </p>
-          <p>
-            <span className="text-muted-foreground">Role:</span> {profile.role}
-          </p>
+          {profile.dateOfBirth && (
+            <p>
+              <span className="text-muted-foreground">DOB:</span>{" "}
+              {format(parseISO(profile.dateOfBirth), "PP")}
+            </p>
+          )}
           <p>
             <span className="text-muted-foreground">Last session:</span>{" "}
             {lastSession ? format(parseISO(lastSession.startDatetime), "PP") : "—"}
@@ -318,10 +420,58 @@ function OverviewTab({
         <CardHeader>
           <CardTitle>Matching form</CardTitle>
         </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">
-          The therapist-facing endpoint to read a patient's matching form is not yet implemented.
+        <CardContent className="space-y-2 text-sm">
+          {!matchingPrefs ? (
+            <p className="text-muted-foreground">No matching preferences on file.</p>
+          ) : (
+            <>
+              {matchingPrefs.has_prior_counseling && (
+                <Field label="Prior counseling" value={matchingPrefs.has_prior_counseling} />
+              )}
+              {matchingPrefs.communication_style && (
+                <Field label="Communication style" value={matchingPrefs.communication_style} />
+              )}
+              {matchingPrefs.gender && (
+                <Field label="Gender" value={matchingPrefs.gender} />
+              )}
+              {matchingPrefs.age && <Field label="Age" value={String(matchingPrefs.age)} />}
+              {matchingPrefs.reasons && matchingPrefs.reasons.length > 0 && (
+                <Field label="Reasons" value={matchingPrefs.reasons.join(", ")} />
+              )}
+              {matchingPrefs.sexual_orientation && (
+                <Field label="Sexual orientation" value={matchingPrefs.sexual_orientation} />
+              )}
+              {typeof matchingPrefs.is_lgbtq_priority === "boolean" && (
+                <Field
+                  label="LGBTQ+ priority"
+                  value={matchingPrefs.is_lgbtq_priority ? "Yes" : "No"}
+                />
+              )}
+              {matchingPrefs.self_harm_thought && (
+                <Field label="Self-harm thought" value={matchingPrefs.self_harm_thought} />
+              )}
+              {matchingPrefs.mood_levels &&
+                Object.entries(matchingPrefs.mood_levels).map(([k, v]) => (
+                  <Field key={k} label={`Mood: ${k}`} value={String(v)} />
+                ))}
+              {matchingPrefs.last_updated_at && (
+                <p className="pt-1 text-[10px] text-muted-foreground">
+                  Updated {format(parseISO(matchingPrefs.last_updated_at), "PP")}
+                </p>
+              )}
+            </>
+          )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-xs uppercase text-muted-foreground">{label}</p>
+      <p>{value}</p>
     </div>
   );
 }
@@ -333,13 +483,13 @@ function NotesTab({
 }: {
   patientId: string;
   patientName: string;
-  notes: NoteRow[];
+  notes: ClinicalNoteResponse[];
 }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          Clinical notes for {patientName}. One note per completed appointment.
+          Clinical notes for {patientName}.
         </p>
         <Button asChild size="sm">
           <Link to={`/clinical-notes/new?patientId=${patientId}`}>New note</Link>
@@ -358,13 +508,15 @@ function NotesTab({
             <div>
               <p className="text-sm font-medium">{format(parseISO(n.createdAt), "PP")}</p>
               <p className="text-xs text-muted-foreground">
-                {n.diagnosis ?? "(no diagnosis)"}
+                {n.summary ?? n.diagnosis ?? "(no summary)"}
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant="default">{n.appointmentStatus ?? "—"}</Badge>
+              <Badge variant={n.status === "FINALIZED" ? "default" : "warning"}>
+                {n.status ?? "—"}
+              </Badge>
               <Button asChild size="sm" variant="outline">
-                <Link to={`/clinical-notes/${n.appointmentId}`}>Open</Link>
+                <Link to={`/clinical-notes/${n.noteId}`}>Open</Link>
               </Button>
             </div>
           </CardContent>
@@ -385,9 +537,7 @@ function DiaryTab({ patientId }: { patientId: string }) {
     setLoading(true);
     listDiary(patientId)
       .then((data) => !cancelled && setEntries(data))
-      .catch((e: ApiError) =>
-        !cancelled && setError(e?.message ?? "Failed to load diary"),
-      )
+      .catch((e: ApiError) => !cancelled && setError(e?.message ?? "Failed to load diary"))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
@@ -538,7 +688,7 @@ function SleepTab({ patientId }: { patientId: string }) {
     .sort((a, b) => (a.entryDate ?? a.createdAt).localeCompare(b.entryDate ?? b.createdAt))
     .map((s) => ({
       day: (s.entryDate ?? s.createdAt).slice(5, 10),
-      durationH: ((s.durationMinutes ?? 0) / 60).toFixed(1),
+      durationH: Number(((s.durationMinutes ?? 0) / 60).toFixed(1)),
       quality: s.sleepQuality ?? 0,
     }));
 
@@ -577,10 +727,12 @@ function SleepTab({ patientId }: { patientId: string }) {
           {logs.map((s) => (
             <div key={s.id} className="flex items-center justify-between rounded-md border p-2">
               <div>
-                <p className="font-medium">{s.entryDate ?? format(parseISO(s.createdAt), "PP")}</p>
+                <p className="font-medium">
+                  {s.entryDate ?? format(parseISO(s.createdAt), "PP")}
+                </p>
                 <p className="text-xs text-muted-foreground">
-                  {format(parseISO(s.bedTime), "HH:mm")} → {format(parseISO(s.wakeTime), "HH:mm")} (
-                  {((s.durationMinutes ?? 0) / 60).toFixed(1)} h)
+                  {format(parseISO(s.bedTime), "HH:mm")} → {format(parseISO(s.wakeTime), "HH:mm")}{" "}
+                  ({((s.durationMinutes ?? 0) / 60).toFixed(1)} h)
                 </p>
               </div>
               {typeof s.sleepQuality === "number" && (
@@ -646,7 +798,7 @@ function SessionsTab({
   notes,
 }: {
   sessions: AppointmentSummary[];
-  notes: NoteRow[];
+  notes: ClinicalNoteResponse[];
 }) {
   return (
     <Card>
@@ -680,10 +832,10 @@ function SessionsTab({
                     <td className="p-2">
                       {note ? (
                         <Link
-                          to={`/clinical-notes/${note.appointmentId}`}
+                          to={`/clinical-notes/${note.noteId}`}
                           className="text-primary hover:underline"
                         >
-                          Open
+                          {note.status ?? "Open"}
                         </Link>
                       ) : (
                         <span className="text-muted-foreground">—</span>

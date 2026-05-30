@@ -80,7 +80,7 @@ keyed by **patient** `profileId`. The therapist console needs the inverse view.
 
 ## 2. Therapist profile & directory
 
-### 2.1 🔴 Therapist's own profile (rich fields)
+### 2.1 🔴 Therapist's own profile (rich fields) 
 - **Page(s):** Settings → Profile tab, Sidebar header, License tab
 - **Service:** `Authentication Service API controller.md`
 - **Today:** `GET /api/v1/auth/me` returns
@@ -210,7 +210,7 @@ keyed by **patient** `profileId`. The therapist console needs the inverse view.
 
 ## 5. Permissions / data-access grants (therapist-initiated)
 
-### 5.1 🔴 Therapist-initiated request for data access
+### 5.1 🔴 Therapist-initiated request for data access (No need)
 - **Page(s):** Patient profile (Request access button), Messages right panel.
 - **Service:** `Authentication Service API controller.md` (and/or
   `Tracking Service API controller.md`)
@@ -221,7 +221,7 @@ keyed by **patient** `profileId`. The therapist console needs the inverse view.
   `{ granterProfileId, accessScope, reason }`, plus
   `POST .../requests/{id}/approve|reject` for the patient.
 
-### 5.2 🟡 `GrantStatusResponse.theirGrant.expiresAt` should be populated
+### 5.2 🟡 `GrantStatusResponse.theirGrant.expiresAt` should be populated (minor, no need to care for at the moment)
 - **Page(s):** Patient profile permission card, Messages right panel.
 - **Today:** when `theyGaveMeAccess === true`, the UI shows "Expires …" only
   if `theirGrant.expiresAt` is present; for grants without an expiry, the UI
@@ -275,7 +275,7 @@ keyed by **patient** `profileId`. The therapist console needs the inverse view.
 
 ## 7. Dashboard / analytics
 
-### 7.1 🔴 Therapist dashboard summary
+### 7.1 🔴 Therapist dashboard summary (No need)
 - **Page(s):** Dashboard KPIs (Active patients / Sessions this month /
   Avg rating / Draft notes), Week-at-a-glance, Alerts.
 - **Service:** `Tracking Service API controller.md` exposes
@@ -289,7 +289,7 @@ keyed by **patient** `profileId`. The therapist console needs the inverse view.
   - `draftNoteCount`
   - `moodAlertCount`
 
-### 7.2 🟠 Mood / wellbeing alerts for therapist
+### 7.2 🟠 Mood / wellbeing alerts for therapist (Todo but not now)
 - **Page(s):** Dashboard Alerts card
 - **Service:** `Tracking Service API controller.md` (cross-patient aggregation)
 - **Today:** `ChannelItem.moodAlert` is a `nullable string` on
@@ -314,60 +314,86 @@ keyed by **patient** `profileId`. The therapist console needs the inverse view.
 
 ## 9. Messaging
 
-### 9.1 🟠 REST send-message endpoint
+All items in this section are resolved or intentionally out of scope. Nothing
+in here is a backend ask.
+
+### 9.1 ✅ Send-message transport — *resolved (STOMP wired up)*
 - **Page(s):** `/messages` compose box
 - **Service:** `SOCIAL_API_CONTROLLER_REFERENCE.md`
-- **Today:** sending is documented only via STOMP WebSocket
-  (`/app/chat.send`). The web UI does not yet implement STOMP, so outgoing
-  messages render optimistically and are not persisted.
-- **Proposed (low-cost):** `POST /api/v1/chats/channels/{channelId}/messages`
-  accepting `{ content }`; same domain event emitted.
+- **Status:** Resolved. The web UI now connects to the social service's STOMP
+  endpoint (`${VITE_SOCIAL_BASE_URL}/ws`) on mount of the Messages page,
+  authenticates via the `Authorization: Bearer <jwt>` CONNECT header,
+  subscribes to `/user/queue/messages`, and publishes outbound messages to
+  `/app/chat.send` (and read receipts to `/app/chat.read`).
+- **Where:**
+  - `src/lib/api/chatSocket.ts` — `ChatSocket` wrapper around
+    `@stomp/stompjs` (auto-reconnect, heartbeats, JWT injection).
+  - `src/pages/messages/MessagesPage.tsx` — opens one connection per mount,
+    optimistically renders outgoing messages, replaces the optimistic row
+    with the server echo when it arrives on `/user/queue/messages`, and
+    surfaces connect / disconnect / error state as a status dot under the
+    compose box.
+- **Note:** No REST send endpoint requested. STOMP is sufficient for the
+  current UI.
 
-### 9.2 🟡 Mark all messages in a channel as read
+### 9.2 ✅ Mark all messages in a channel as read — *not needed*
 - **Page(s):** `/messages` when opening a channel
 - **Service:** `SOCIAL_API_CONTROLLER_REFERENCE.md`
-- **Today:** `PATCH …/messages/{messageId}/read` is per-message. Opening a
-  channel needs N PATCHes. Proposed:
-  `POST /api/v1/chats/channels/{channelId}/read-all`.
+- **Status:** Not a backend ask. The UI now opportunistically marks
+  individual incoming messages as read over STOMP (`/app/chat.read`) when
+  they arrive on a channel that's currently open. A bulk
+  `POST .../channels/{channelId}/read-all` endpoint is not required.
 
-### 9.3 🟡 Quick-reply payloads (booking link, breathing exercise, mood prompt)
+### 9.3 ✅ Quick-reply payloads (structured messages) — *out of scope*
 - **Page(s):** `/messages` quick-action buttons (originally in the mock UI)
 - **Service:** `SOCIAL_API_CONTROLLER_REFERENCE.md`
-- **Today:** no structured-message support. We removed those buttons. If
-  retained, would need a structured message type
-  (`SUGGEST_SLOT | EXERCISE | MOOD_PROMPT`).
+- **Status:** Out of scope for the thesis. The mock UI's "Send slot",
+  "Send breathing exercise", and "Mood-check prompt" buttons have been
+  removed from the production UI. No structured-message type (`SUGGEST_SLOT`,
+  `EXERCISE`, `MOOD_PROMPT`) is needed from the backend.
 
-### 9.4 🟡 Therapist online presence
+### 9.4 ✅ Therapist online presence — *out of scope*
 - **Page(s):** `/messages` ("Last seen recently")
 - **Service:** `SOCIAL_API_CONTROLLER_REFERENCE.md`
-- **Today:** no `lastSeenAt` field on channel counterparts. Currently shows
-  the literal string `"Last message …"` from the channel payload instead.
+- **Status:** Out of scope for the thesis. The conversation header shows the
+  channel's `lastMessageAt` (or "No messages yet") instead of a presence
+  indicator. No `lastSeenAt` field requested.
 
 ---
 
 ## 10. Notifications
 
-### 10.1 🟡 Notification preferences (per-channel toggles)
+### 10.1 — Notification preferences (per-channel toggles) — *intentionally deferred*
 - **Page(s):** Settings → Notifications tab
 - **Service:** `NOTIFICATION_API_CONTROLLER_REFERENCE.md`
-- **Today:** inbox + mark-read endpoints exist, but no per-user preference
-  endpoint. Proposed: `GET/PUT /api/v1/notifications/{profileId}/preferences`.
+- **Status:** Not a backend ask. Per-type / per-channel toggles are
+  intentionally not exposed for now — every therapist receives every kind of
+  notification. The Settings → Notifications tab does not render toggle
+  controls. If we ever bring this back, the backend will need
+  `GET/PUT /api/v1/notifications/{profileId}/preferences`.
 
-### 10.2 🟡 Per-row deep-link target on notification items
+### 10.2 — Per-row deep-link target on notification items — *accepted limitation*
 - **Page(s):** Top-bar notifications dropdown
 - **Service:** `NOTIFICATION_API_CONTROLLER_REFERENCE.md`
-- **Today:** the docs note "derive the deep-link target from `type` on the
-  frontend." The therapist UI does so via a local mapping. Section 6 of the
-  notification spec already flags this as a known limitation; called out
-  here for the client-side cost it imposes.
+- **Status:** Accepted. No backend change requested. Notification rows expose
+  only a `type` enum (`BOOKING | CHAT | STREAK | REMINDER | INSIGHT`), not a
+  per-row deep-link URL. The therapist UI maps `type → route` in
+  `src/components/layout/TopBar.tsx` (`NOTIFICATION_LINK_BY_TYPE`), which
+  lands the user on the relevant section page but cannot deep-link to a
+  specific appointment / chat / streak. That trade-off is fine for now; if
+  per-row deep links become important, the notification spec's section 6
+  already flags the option to add a `link` (or `referenceId`) field on each
+  row.
 
-### 10.3 🟡 Auth on notification endpoints
+### 10.3 ✅ Auth on notification endpoints — *resolved*
 - **Page(s):** Top-bar notifications dropdown
 - **Service:** `NOTIFICATION_API_CONTROLLER_REFERENCE.md`
-- **Today:** the docs say the API is "open — no Authorization header" until
-  JWT auth lands. The client code passes `auth: false` for those calls. Once
-  JWT is enforced, flip the per-request `auth` flag in
-  `src/lib/api/notification.ts`.
+- **Status:** Resolved. The notification service now enforces
+  `Authorization: Bearer <JWT>` on every endpoint (per the updated
+  section 2 of `NOTIFICATION_API_CONTROLLER_REFERENCE.md`).
+  `src/lib/api/notification.ts` has been updated to send the token on every
+  call, and `POST /api/v1/devices` no longer sends `profileId` in the body
+  (the service reads it from the JWT claim).
 
 ---
 

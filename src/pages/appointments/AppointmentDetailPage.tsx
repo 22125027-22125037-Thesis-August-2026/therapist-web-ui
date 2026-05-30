@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { differenceInMinutes, format, isPast, parseISO } from "date-fns";
 import {
   CalendarClock,
+  Check,
   CheckCircle2,
   ClipboardList,
   Loader2,
@@ -14,7 +15,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Dialog,
   DialogContent,
@@ -27,21 +28,23 @@ import { Textarea } from "@/components/ui/textarea";
 import { AppointmentStatusBadge } from "@/components/StatusBadge";
 import { initials } from "@/lib/utils";
 import {
-  fetchTherapistAppointments,
-  type AppointmentRow,
-} from "@/lib/api/therapistAppointments";
-import { getProfileSummary, type ProfileSummary } from "@/lib/api/auth";
-import { listDiary, type DiaryEntryResponse } from "@/lib/api/tracking";
-import {
+  cancelAppointment,
+  confirmBooking,
+  getAppointmentDetail,
   getClinicalNoteByAppointment,
+  rejectBooking,
+  type AppointmentDetail,
+  type AppointmentStatusServer,
   type ClinicalNoteResponse,
 } from "@/lib/api/therapist";
+import { getPatientDetail, type PatientDetailResponse } from "@/lib/api/auth";
+import { listDiary, type DiaryEntryResponse } from "@/lib/api/tracking";
 import { ApiError } from "@/lib/api/http";
 import type { AppointmentStatus } from "@/types";
 
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 
-const statusMap: Record<string, AppointmentStatus> = {
+const statusUiMap: Record<AppointmentStatusServer, AppointmentStatus> = {
   REQUESTED: "REQUESTED",
   UPCOMING: "CONFIRMED",
   IN_PROGRESS: "IN_PROGRESS",
@@ -54,42 +57,43 @@ export function AppointmentDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [cancelOpen, setCancelOpen] = React.useState(false);
-  const [cancelReason, setCancelReason] = React.useState("");
+  const [rejectOpen, setRejectOpen] = React.useState(false);
+  const [actionReason, setActionReason] = React.useState("");
+  const [actionBusy, setActionBusy] = React.useState(false);
+  const [actionError, setActionError] = React.useState<string | null>(null);
 
-  const [appt, setAppt] = React.useState<AppointmentRow | null>(null);
-  const [patient, setPatient] = React.useState<ProfileSummary | null>(null);
+  const [appt, setAppt] = React.useState<AppointmentDetail | null>(null);
+  const [patient, setPatient] = React.useState<PatientDetailResponse | null>(null);
   const [diary, setDiary] = React.useState<DiaryEntryResponse[]>([]);
   const [note, setNote] = React.useState<ClinicalNoteResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
 
-  React.useEffect(() => {
+  const reload = React.useCallback(async () => {
     if (!id) return;
-    let cancelled = false;
     setLoading(true);
-    fetchTherapistAppointments()
-      .then(async ({ appointments }) => {
-        const a = appointments.find((x) => x.appointmentId === id);
-        if (!a) return;
-        if (cancelled) return;
-        setAppt(a);
-        const [profileR, diaryR, noteR] = await Promise.allSettled([
-          getProfileSummary(a.patientId),
-          listDiary(a.patientId),
-          getClinicalNoteByAppointment(a.appointmentId),
-        ]);
-        if (cancelled) return;
-        if (profileR.status === "fulfilled") setPatient(profileR.value);
-        if (diaryR.status === "fulfilled") setDiary(diaryR.value.slice(0, 5));
-        if (noteR.status === "fulfilled") setNote(noteR.value);
-      })
-      .catch((err) => {
-        if (err instanceof ApiError) console.warn("Appointment load failed", err.status);
-      })
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
+    try {
+      const a = await getAppointmentDetail(id);
+      setAppt(a);
+      const [patientR, diaryR, noteR] = await Promise.allSettled([
+        getPatientDetail(a.profileId),
+        listDiary(a.profileId),
+        getClinicalNoteByAppointment(a.appointmentId),
+      ]);
+      if (patientR.status === "fulfilled") setPatient(patientR.value);
+      if (diaryR.status === "fulfilled") setDiary(diaryR.value.slice(0, 5));
+      if (noteR.status === "fulfilled") setNote(noteR.value);
+      else setNote(null);
+    } catch (err) {
+      if (err instanceof ApiError) console.warn("appointment load failed", err.status);
+      setAppt(null);
+    } finally {
+      setLoading(false);
+    }
   }, [id]);
+
+  React.useEffect(() => {
+    void reload();
+  }, [reload]);
 
   if (loading) {
     return (
@@ -104,13 +108,68 @@ export function AppointmentDetailPage() {
   }
 
   const start = parseISO(appt.startDatetime);
-  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  const end = appt.endDatetime
+    ? parseISO(appt.endDatetime)
+    : new Date(start.getTime() + 60 * 60 * 1000);
   const now = new Date();
   const inJoinWindow =
     now.getTime() >= start.getTime() - TEN_MINUTES_MS && now.getTime() <= end.getTime();
   const isUpcoming = !isPast(start);
   const minutesToStart = differenceInMinutes(start, now);
-  const uiStatus = statusMap[appt.status] ?? "CONFIRMED";
+  const uiStatus = statusUiMap[appt.status];
+
+  const isRequested = appt.status === "REQUESTED";
+  const canConfirmReject = isRequested && minutesToStart > 120;
+  const canCancelUpcoming =
+    (appt.status === "UPCOMING" || appt.status === "IN_PROGRESS") &&
+    differenceInMinutes(start, now) > 60;
+
+  const handleConfirm = async () => {
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await confirmBooking(appt.appointmentId);
+      await reload();
+    } catch (e: any) {
+      setActionError(e?.message ?? "Failed to confirm");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleReject = async () => {
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await rejectBooking(appt.appointmentId, actionReason || undefined);
+      setRejectOpen(false);
+      setActionReason("");
+      await reload();
+    } catch (e: any) {
+      setActionError(e?.message ?? "Failed to reject");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!actionReason.trim()) {
+      setActionError("Reason is required.");
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await cancelAppointment(appt.appointmentId, actionReason);
+      setCancelOpen(false);
+      setActionReason("");
+      await reload();
+    } catch (e: any) {
+      setActionError(e?.message ?? "Failed to cancel");
+    } finally {
+      setActionBusy(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -119,13 +178,22 @@ export function AppointmentDetailPage() {
           <Link to="/appointments" className="text-sm text-muted-foreground hover:underline">
             ← Back to appointments
           </Link>
-          <h1 className="mt-1 text-2xl font-semibold">Session with {appt.patientName}</h1>
+          <h1 className="mt-1 text-2xl font-semibold">
+            Session with {appt.patientName ?? patient?.fullName ?? "patient"}
+          </h1>
           <p className="text-sm text-muted-foreground">
             {format(start, "EEEE, d LLLL yyyy 'at' HH:mm")} ({appt.mode})
           </p>
         </div>
         <AppointmentStatusBadge status={uiStatus} />
       </div>
+
+      {appt.status === "CANCELLED" && appt.cancellationReason && (
+        <div className="rounded-md border-l-4 border-destructive bg-destructive/5 p-3 text-sm">
+          <p className="font-medium">Cancelled</p>
+          <p className="text-muted-foreground">{appt.cancellationReason}</p>
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
@@ -135,31 +203,67 @@ export function AppointmentDetailPage() {
             </CardHeader>
             <CardContent className="grid gap-3 text-sm md:grid-cols-2">
               <InfoRow icon={CalendarClock} label="Starts" value={format(start, "PP HH:mm")} />
-              <InfoRow icon={CalendarClock} label="Ends (≈)" value={format(end, "PP HH:mm")} />
+              <InfoRow icon={CalendarClock} label="Ends" value={format(end, "PP HH:mm")} />
               <InfoRow
                 icon={appt.mode === "VIDEO" ? Video : MessageCircle}
                 label="Mode"
                 value={appt.mode}
               />
               <InfoRow icon={ClipboardList} label="Slot ID" value={appt.slotId} />
+              {appt.reason && (
+                <div className="md:col-span-2">
+                  <p className="text-xs uppercase text-muted-foreground">
+                    Patient's stated reason
+                  </p>
+                  <p className="mt-1">{appt.reason}</p>
+                </div>
+              )}
             </CardContent>
           </Card>
 
-          {isUpcoming && (
+          {isRequested && (
             <Card>
               <CardHeader>
-                <CardTitle>Pre-session checklist</CardTitle>
+                <CardTitle>Decision required</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <ChecklistItem
-                  label="Review patient's recent diary entries"
-                  to={`/patients/${appt.patientId}?tab=diary`}
-                />
-                <ChecklistItem
-                  label="Review previous clinical notes"
-                  to={`/patients/${appt.patientId}?tab=notes`}
-                />
-                <ChecklistItem label="Confirm video equipment" />
+              <CardContent className="space-y-3 text-sm">
+                <p className="text-muted-foreground">
+                  This booking is awaiting your decision. You have until 2 hours before the
+                  start time to confirm or reject — after that the auto-reject sweep will
+                  cancel it.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    onClick={handleConfirm}
+                    disabled={!canConfirmReject || actionBusy}
+                  >
+                    {actionBusy ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Check className="h-4 w-4" />
+                    )}
+                    Confirm booking
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={!canConfirmReject || actionBusy}
+                    onClick={() => {
+                      setRejectOpen(true);
+                      setActionReason("");
+                      setActionError(null);
+                    }}
+                  >
+                    <X className="h-4 w-4" /> Reject
+                  </Button>
+                  {!canConfirmReject && (
+                    <span className="text-xs text-warning">
+                      Decision window has closed ({"<"} 2 h to start).
+                    </span>
+                  )}
+                </div>
+                {actionError && (
+                  <p className="text-xs text-destructive">{actionError}</p>
+                )}
               </CardContent>
             </Card>
           )}
@@ -196,8 +300,8 @@ export function AppointmentDetailPage() {
                   <span>Clinical note</span>
                   {note ? (
                     <Button asChild size="sm" variant="outline">
-                      <Link to={`/clinical-notes/${appt.appointmentId}`}>
-                        Open
+                      <Link to={`/clinical-notes/${note.noteId}`}>
+                        Open ({note.status ?? "FINALIZED"})
                       </Link>
                     </Button>
                   ) : (
@@ -230,17 +334,34 @@ export function AppointmentDetailPage() {
               <div className="space-y-3">
                 <div className="flex items-center gap-3">
                   <Avatar className="h-12 w-12">
-                    <AvatarFallback>{initials(appt.patientName)}</AvatarFallback>
+                    {patient?.avatarUrl && <AvatarImage src={patient.avatarUrl} alt="" />}
+                    <AvatarFallback>
+                      {initials(appt.patientName ?? patient?.fullName ?? "?")}
+                    </AvatarFallback>
                   </Avatar>
                   <div>
-                    <p className="font-medium">{appt.patientName}</p>
+                    <p className="font-medium">
+                      {appt.patientName ?? patient?.fullName ?? "—"}
+                    </p>
+                    {patient && (
+                      <p className="text-xs text-muted-foreground">
+                        {patient.age != null && `Age ${patient.age}`}
+                        {patient.gender && ` · ${patient.gender.toLowerCase()}`}
+                      </p>
+                    )}
                     {patient?.email && (
                       <p className="text-xs text-muted-foreground">{patient.email}</p>
                     )}
                   </div>
                 </div>
+                {patient?.emergencyContact && (
+                  <div className="rounded-md border bg-warning/5 p-2 text-xs">
+                    <p className="font-medium">Emergency contact</p>
+                    <p className="text-muted-foreground">{patient.emergencyContact}</p>
+                  </div>
+                )}
                 <Button asChild variant="outline" size="sm" className="w-full">
-                  <Link to={`/patients/${appt.patientId}`}>View full profile</Link>
+                  <Link to={`/patients/${appt.profileId}`}>View full profile</Link>
                 </Button>
               </div>
             </CardContent>
@@ -251,38 +372,47 @@ export function AppointmentDetailPage() {
               <CardTitle>Actions</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {isUpcoming && appt.mode === "VIDEO" && (
-                <Button
-                  className="w-full"
-                  disabled={!inJoinWindow}
-                  onClick={() => navigate(`/appointments/${appt.appointmentId}/video`)}
-                >
-                  <Video className="h-4 w-4" />
-                  {inJoinWindow
-                    ? "Join video session"
-                    : `Join opens in ${Math.max(0, minutesToStart - 10)} min`}
-                </Button>
-              )}
-              {isUpcoming && appt.mode === "CHAT" && (
-                <Button asChild className="w-full">
-                  <Link to={`/messages?patient=${appt.patientId}`}>
-                    <MessageCircle className="h-4 w-4" /> Open chat
-                  </Link>
-                </Button>
-              )}
-              {isUpcoming && (
-                <>
-                  <Button variant="outline" className="w-full" asChild>
-                    <Link to="/availability">Reschedule</Link>
-                  </Button>
+              {(appt.status === "UPCOMING" || appt.status === "IN_PROGRESS") &&
+                appt.mode === "VIDEO" && (
                   <Button
-                    variant="ghost"
-                    className="w-full text-destructive"
-                    onClick={() => setCancelOpen(true)}
+                    className="w-full"
+                    disabled={!inJoinWindow}
+                    onClick={() => navigate(`/appointments/${appt.appointmentId}/video`)}
                   >
-                    <X className="h-4 w-4" /> Cancel session
+                    <Video className="h-4 w-4" />
+                    {inJoinWindow
+                      ? "Join video session"
+                      : `Join opens in ${Math.max(0, minutesToStart - 10)} min`}
                   </Button>
-                </>
+                )}
+              {(appt.status === "UPCOMING" || appt.status === "IN_PROGRESS") &&
+                appt.mode !== "VIDEO" && (
+                  <Button asChild className="w-full">
+                    <Link to={`/messages?patient=${appt.profileId}`}>
+                      <MessageCircle className="h-4 w-4" /> Open chat
+                    </Link>
+                  </Button>
+                )}
+              {(appt.status === "REQUESTED" ||
+                appt.status === "UPCOMING" ||
+                appt.status === "IN_PROGRESS") && (
+                <Button
+                  variant="ghost"
+                  className="w-full text-destructive"
+                  disabled={appt.status !== "REQUESTED" && !canCancelUpcoming}
+                  onClick={() => {
+                    setCancelOpen(true);
+                    setActionReason("");
+                    setActionError(null);
+                  }}
+                >
+                  <X className="h-4 w-4" /> Cancel session
+                </Button>
+              )}
+              {appt.status !== "REQUESTED" && !canCancelUpcoming && isUpcoming && (
+                <p className="text-[10px] text-warning">
+                  Cancellation closed (within 1 h of start).
+                </p>
               )}
             </CardContent>
           </Card>
@@ -294,26 +424,56 @@ export function AppointmentDetailPage() {
           <DialogHeader>
             <DialogTitle>Cancel session?</DialogTitle>
             <DialogDescription>
-              {appt.patientName} will be notified by email and in-app.
+              {appt.patientName ?? patient?.fullName ?? "The patient"} will be notified.
             </DialogDescription>
           </DialogHeader>
           <Textarea
-            placeholder="Reason for cancellation (visible to patient)"
-            value={cancelReason}
-            onChange={(e) => setCancelReason(e.target.value)}
+            placeholder="Reason for cancellation (required)"
+            value={actionReason}
+            onChange={(e) => setActionReason(e.target.value)}
           />
+          {actionError && <p className="text-xs text-destructive">{actionError}</p>}
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setCancelOpen(false)}>
+            <Button variant="ghost" onClick={() => setCancelOpen(false)} disabled={actionBusy}>
               Keep session
             </Button>
             <Button
               variant="destructive"
-              onClick={() => {
-                setCancelOpen(false);
-                navigate("/appointments");
-              }}
+              onClick={handleCancel}
+              disabled={actionBusy || !actionReason.trim()}
             >
-              <CheckCircle2 className="h-4 w-4" /> Cancel session
+              {actionBusy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <CheckCircle2 className="h-4 w-4" />
+              )}
+              Cancel session
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject this booking request?</DialogTitle>
+            <DialogDescription>
+              The slot will be released so other patients can book it.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            placeholder="Reason (optional, shown to the patient)"
+            value={actionReason}
+            onChange={(e) => setActionReason(e.target.value)}
+          />
+          {actionError && <p className="text-xs text-destructive">{actionError}</p>}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRejectOpen(false)} disabled={actionBusy}>
+              Keep
+            </Button>
+            <Button variant="destructive" onClick={handleReject} disabled={actionBusy}>
+              {actionBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+              Reject booking
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -330,22 +490,6 @@ function InfoRow({ icon: Icon, label, value }: { icon: any; label: string; value
         <p className="text-xs uppercase text-muted-foreground">{label}</p>
         <p className="text-sm">{value}</p>
       </div>
-    </div>
-  );
-}
-
-function ChecklistItem({ label, to }: { label: string; to?: string }) {
-  return (
-    <div className="flex items-center justify-between rounded-md border p-2 text-sm">
-      <label className="flex items-center gap-2">
-        <input type="checkbox" className="h-4 w-4" />
-        {label}
-      </label>
-      {to && (
-        <Button asChild variant="ghost" size="sm">
-          <Link to={to}>Open</Link>
-        </Button>
-      )}
     </div>
   );
 }

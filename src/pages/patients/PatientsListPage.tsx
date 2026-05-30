@@ -4,81 +4,46 @@ import { format, parseISO } from "date-fns";
 import { Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { PermissionBadge } from "@/components/PermissionBadge";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { RiskBadge } from "@/components/StatusBadge";
 import { initials } from "@/lib/utils";
-import { listChannels, type ChannelItem } from "@/lib/api/social";
-import { getGrantStatus } from "@/lib/api/auth";
-
-interface PatientRow {
-  profileId: string;
-  displayName: string;
-  profilename: string;
-  avatarUrl?: string | null;
-  lastMessageAt?: string | null;
-  lastMessagePreview?: string | null;
-  unreadCount: number;
-  permissionGranted: boolean;
-  permissionLoading: boolean;
-  channel: ChannelItem;
-}
+import { useAuth } from "@/context/AuthContext";
+import {
+  listTherapistPatients,
+  type TherapistPatientRosterItem,
+} from "@/lib/api/therapist";
 
 export function PatientsListPage() {
+  const { user } = useAuth();
   const [search, setSearch] = React.useState("");
-  const [onlyGranted, setOnlyGranted] = React.useState(false);
-  const [rows, setRows] = React.useState<PatientRow[]>([]);
+  const [statusFilter, setStatusFilter] = React.useState<"ALL" | "ACTIVE" | "INACTIVE">("ALL");
+  const [tag, setTag] = React.useState("");
+  const [rows, setRows] = React.useState<TherapistPatientRosterItem[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
+    if (!user?.id) return;
     let cancelled = false;
     setLoading(true);
-    listChannels()
-      .then(async (channels) => {
-        if (cancelled) return;
-        const initial: PatientRow[] = (channels ?? []).map((c) => ({
-          profileId: c.counterpartProfileId,
-          displayName: c.counterpartDisplayName ?? c.counterpartProfilename,
-          profilename: c.counterpartProfilename,
-          avatarUrl: c.counterpartAvatarUrl,
-          lastMessageAt: c.lastMessageAt,
-          lastMessagePreview: c.lastMessagePreview,
-          unreadCount: c.unreadCount,
-          permissionGranted: false,
-          permissionLoading: true,
-          channel: c,
-        }));
-        setRows(initial);
-
-        // Fan out for grant status per patient
-        const results = await Promise.allSettled(
-          initial.map((r) => getGrantStatus(r.profileId)),
-        );
-        if (cancelled) return;
-        setRows((curr) =>
-          curr.map((r, i) => {
-            const res = results[i];
-            if (res.status === "fulfilled") {
-              return {
-                ...r,
-                permissionGranted: !!res.value?.data?.theyGaveMeAccess,
-                permissionLoading: false,
-              };
-            }
-            return { ...r, permissionLoading: false };
-          }),
-        );
-      })
+    listTherapistPatients(user.id)
+      .then((list) => !cancelled && setRows(list ?? []))
       .catch((e) => !cancelled && setError(e?.message ?? "Failed to load patients"))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [user?.id]);
 
-  const filtered = rows.filter((r) => {
-    if (onlyGranted && !r.permissionGranted) return false;
-    if (search && !r.displayName.toLowerCase().includes(search.toLowerCase())) return false;
+  const allTags = Array.from(
+    new Set(rows.flatMap((p) => p.tags ?? [])),
+  ).sort();
+
+  const filtered = rows.filter((p) => {
+    if (statusFilter !== "ALL" && p.assignmentStatus !== statusFilter) return false;
+    if (tag && !(p.tags ?? []).includes(tag)) return false;
+    if (search && !p.patientName.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
@@ -98,14 +63,31 @@ export function PatientsListPage() {
             onChange={(e) => setSearch(e.target.value)}
             className="w-56"
           />
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={onlyGranted}
-              onChange={(e) => setOnlyGranted(e.target.checked)}
-            />
-            Only with permission
-          </label>
+          <select
+            value={statusFilter}
+            onChange={(e) =>
+              setStatusFilter(e.target.value as "ALL" | "ACTIVE" | "INACTIVE")
+            }
+            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+            aria-label="Filter by assignment status"
+          >
+            <option value="ALL">All assignments</option>
+            <option value="ACTIVE">Active only</option>
+            <option value="INACTIVE">Past only</option>
+          </select>
+          <select
+            value={tag}
+            onChange={(e) => setTag(e.target.value)}
+            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+            aria-label="Filter by tag"
+          >
+            <option value="">All tags</option>
+            {allTags.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -126,10 +108,9 @@ export function PatientsListPage() {
               <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
                 <tr>
                   <th className="p-3 text-left">Patient</th>
-                  <th className="p-3 text-left">Profile name</th>
-                  <th className="p-3 text-left">Last message</th>
-                  <th className="p-3 text-left">Unread</th>
-                  <th className="p-3 text-left">Access</th>
+                  <th className="p-3 text-left">Assignment</th>
+                  <th className="p-3 text-left">Assigned</th>
+                  <th className="p-3 text-left">Risk</th>
                   <th />
                 </tr>
               </thead>
@@ -139,30 +120,39 @@ export function PatientsListPage() {
                     <td className="p-3">
                       <div className="flex items-center gap-3">
                         <Avatar>
-                          {p.avatarUrl && <AvatarImage src={p.avatarUrl} alt="" />}
-                          <AvatarFallback>{initials(p.displayName)}</AvatarFallback>
+                          <AvatarFallback>{initials(p.patientName)}</AvatarFallback>
                         </Avatar>
                         <div>
                           <Link
                             to={`/patients/${p.profileId}`}
                             className="font-medium hover:underline"
                           >
-                            {p.displayName}
+                            {p.patientName}
                           </Link>
+                          {(p.tags ?? []).length > 0 && (
+                            <div className="flex gap-1 pt-0.5">
+                              {(p.tags ?? []).map((t) => (
+                                <Badge key={t} variant="secondary" className="text-[10px]">
+                                  {t}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
                     </td>
-                    <td className="p-3 text-muted-foreground">{p.profilename}</td>
-                    <td className="p-3 text-muted-foreground">
-                      {p.lastMessageAt ? format(parseISO(p.lastMessageAt), "PP HH:mm") : "—"}
-                    </td>
-                    <td className="p-3 text-muted-foreground">{p.unreadCount}</td>
                     <td className="p-3">
-                      {p.permissionLoading ? (
-                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-                      ) : (
-                        <PermissionBadge granted={p.permissionGranted} />
-                      )}
+                      <Badge
+                        variant={p.assignmentStatus === "ACTIVE" ? "success" : "muted"}
+                      >
+                        {p.assignmentStatus}
+                      </Badge>
+                    </td>
+                    <td className="p-3 text-muted-foreground">
+                      {format(parseISO(p.assignedAt), "PP")}
+                    </td>
+                    <td className="p-3">
+                      <RiskBadge level={p.riskLevel ?? "NONE"} />
                     </td>
                     <td className="p-3 text-right">
                       <Link
@@ -176,7 +166,7 @@ export function PatientsListPage() {
                 ))}
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="p-12 text-center text-muted-foreground">
+                    <td colSpan={5} className="p-12 text-center text-muted-foreground">
                       No patients match the filters.
                     </td>
                   </tr>

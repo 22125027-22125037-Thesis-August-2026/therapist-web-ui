@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 import { Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -7,72 +7,43 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  fetchTherapistAppointments,
-  type AppointmentRow,
-} from "@/lib/api/therapistAppointments";
-import {
-  getClinicalNoteByAppointment,
-  type ClinicalNoteResponse,
-} from "@/lib/api/therapist";
+import { useAuth } from "@/context/AuthContext";
+import { listClinicalNotes, type ClinicalNoteResponse } from "@/lib/api/therapist";
 
-interface NoteListRow extends ClinicalNoteResponse {
-  patientId: string;
-  patientName: string;
-  appointmentDate: string;
-}
+type StatusKey = "all" | "draft" | "finalized";
 
 export function ClinicalNotesListPage() {
+  const { user } = useAuth();
+  const [params, setParams] = useSearchParams();
   const [search, setSearch] = React.useState("");
-  const [status, setStatus] = React.useState<string>("all");
-  const [rows, setRows] = React.useState<NoteListRow[]>([]);
-  const [completedSessions, setCompletedSessions] = React.useState<AppointmentRow[]>([]);
+  const initialStatus = (params.get("status") as StatusKey | null) ?? "all";
+  const [status, setStatus] = React.useState<StatusKey>(initialStatus);
+  const [rows, setRows] = React.useState<ClinicalNoteResponse[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
+    if (!user?.id) return;
     let cancelled = false;
     setLoading(true);
-    fetchTherapistAppointments()
-      .then(async ({ appointments }) => {
-        const completed = appointments.filter((a) => a.status === "COMPLETED");
-        if (cancelled) return;
-        setCompletedSessions(completed);
-        const noteResults = await Promise.allSettled(
-          completed.map((a) =>
-            getClinicalNoteByAppointment(a.appointmentId).then((n) => ({
-              ...n,
-              patientId: a.patientId,
-              patientName: a.patientName,
-              appointmentDate: a.startDatetime,
-            })),
-          ),
-        );
-        if (cancelled) return;
-        setRows(
-          noteResults
-            .filter((r): r is PromiseFulfilledResult<NoteListRow> => r.status === "fulfilled")
-            .map((r) => r.value),
-        );
-      })
-      .catch(() => !cancelled && setRows([]))
+    setError(null);
+    listClinicalNotes({
+      therapistId: user.id,
+      status: status === "all" ? undefined : status === "draft" ? "DRAFT" : "FINALIZED",
+      page: 0,
+      size: 200,
+      sort: "createdAt,desc",
+    })
+      .then((page) => !cancelled && setRows(page.content ?? []))
+      .catch((e) => !cancelled && setError(e?.message ?? "Failed to load notes"))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [user?.id, status]);
 
-  const filtered = rows
-    .filter((n) => {
-      if (status === "all") return true;
-      // The backend doesn't distinguish DRAFT vs FINALIZED — treat all as FINALIZED.
-      return status === "finalized";
-    })
-    .filter((n) =>
-      search ? n.patientName.toLowerCase().includes(search.toLowerCase()) : true,
-    );
-
-  const sessionsWithoutNotes = completedSessions.filter(
-    (s) => !rows.some((r) => r.appointmentId === s.appointmentId),
+  const filtered = rows.filter((n) =>
+    search ? (n.summary ?? n.diagnosis ?? "").toLowerCase().includes(search.toLowerCase()) : true,
   );
 
   return (
@@ -81,7 +52,7 @@ export function ClinicalNotesListPage() {
         <div>
           <h1 className="text-2xl font-semibold">Clinical notes</h1>
           <p className="text-sm text-muted-foreground">
-            One note per completed appointment. Patients never see these.
+            Your private working record. Patients never see these.
           </p>
         </div>
         <Button asChild>
@@ -89,15 +60,24 @@ export function ClinicalNotesListPage() {
         </Button>
       </div>
 
-      <Tabs value={status} onValueChange={setStatus}>
+      <Tabs
+        value={status}
+        onValueChange={(v) => {
+          setStatus(v as StatusKey);
+          const next = new URLSearchParams(params);
+          if (v === "all") next.delete("status");
+          else next.set("status", v);
+          setParams(next);
+        }}
+      >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <TabsList>
             <TabsTrigger value="all">All</TabsTrigger>
+            <TabsTrigger value="draft">Drafts</TabsTrigger>
             <TabsTrigger value="finalized">Finalized</TabsTrigger>
-            <TabsTrigger value="draft">Drafts (n/a)</TabsTrigger>
           </TabsList>
           <Input
-            placeholder="Search by patient…"
+            placeholder="Search summary / diagnosis…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-56"
@@ -105,24 +85,10 @@ export function ClinicalNotesListPage() {
         </div>
       </Tabs>
 
-      {sessionsWithoutNotes.length > 0 && (
-        <Card>
-          <CardContent className="p-4 text-sm">
-            <p className="font-medium">
-              {sessionsWithoutNotes.length} completed session
-              {sessionsWithoutNotes.length === 1 ? "" : "s"} without a clinical note
-            </p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {sessionsWithoutNotes.slice(0, 6).map((s) => (
-                <Button key={s.appointmentId} asChild size="sm" variant="outline">
-                  <Link to={`/clinical-notes/new?appointmentId=${s.appointmentId}`}>
-                    {s.patientName} · {format(parseISO(s.startDatetime), "PP")}
-                  </Link>
-                </Button>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+      {error && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+          {error}
+        </div>
       )}
 
       <Card>
@@ -136,22 +102,17 @@ export function ClinicalNotesListPage() {
               <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
                 <tr>
                   <th className="p-3 text-left">Date</th>
-                  <th className="p-3 text-left">Patient</th>
                   <th className="p-3 text-left">Appointment</th>
-                  <th className="p-3 text-left">Diagnosis</th>
-                  <th className="p-3 text-left">Created</th>
+                  <th className="p-3 text-left">Summary</th>
+                  <th className="p-3 text-left">Last edited</th>
+                  <th className="p-3 text-left">Status</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((n) => (
                   <tr key={n.noteId} className="border-t hover:bg-muted/30">
-                    <td className="p-3">{format(parseISO(n.appointmentDate), "PP")}</td>
-                    <td className="p-3 font-medium">
-                      <Link to={`/patients/${n.patientId}`} className="hover:underline">
-                        {n.patientName}
-                      </Link>
-                    </td>
+                    <td className="p-3">{format(parseISO(n.createdAt), "PP")}</td>
                     <td className="p-3 text-muted-foreground">
                       <Link
                         to={`/appointments/${n.appointmentId}`}
@@ -160,13 +121,22 @@ export function ClinicalNotesListPage() {
                         {n.appointmentId.slice(0, 8)}
                       </Link>
                     </td>
-                    <td className="p-3 text-muted-foreground">{n.diagnosis ?? "—"}</td>
                     <td className="p-3 text-muted-foreground">
-                      {format(parseISO(n.createdAt), "PP HH:mm")}
+                      {n.summary ?? n.diagnosis ?? "(no summary)"}
+                    </td>
+                    <td className="p-3 text-muted-foreground">
+                      {n.updatedAt
+                        ? format(parseISO(n.updatedAt), "PP HH:mm")
+                        : format(parseISO(n.createdAt), "PP HH:mm")}
+                    </td>
+                    <td className="p-3">
+                      <Badge variant={n.status === "FINALIZED" ? "default" : "warning"}>
+                        {n.status ?? "—"}
+                      </Badge>
                     </td>
                     <td className="p-3 text-right">
                       <Link
-                        to={`/clinical-notes/${n.appointmentId}`}
+                        to={`/clinical-notes/${n.noteId}`}
                         className="text-primary hover:underline"
                       >
                         Open →

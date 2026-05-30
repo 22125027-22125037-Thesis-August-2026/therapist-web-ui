@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { format, isSameDay, isWithinInterval, parseISO, startOfWeek, isAfter } from "date-fns";
+import { format, isSameDay, isWithinInterval, parseISO, startOfWeek } from "date-fns";
 import {
   AlertTriangle,
   CalendarCheck,
@@ -18,78 +18,58 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { initials } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
-import { listChannels, type ChannelItem } from "@/lib/api/social";
 import {
-  getAppointmentHistory,
-  getUpcomingAppointment,
+  listTherapistAppointments,
+  getTherapistDashboardSummary,
   type AppointmentSummary,
+  type TherapistDashboardSummary,
 } from "@/lib/api/therapist";
 import { ApiError } from "@/lib/api/http";
 
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 
-interface AppointmentWithPatient extends AppointmentSummary {
-  patientName: string;
-}
-
 export function DashboardPage() {
   const { user } = useAuth();
   const now = React.useMemo(() => new Date(), []);
 
-  const [channels, setChannels] = React.useState<ChannelItem[]>([]);
-  const [upcoming, setUpcoming] = React.useState<AppointmentWithPatient[]>([]);
-  const [history, setHistory] = React.useState<AppointmentWithPatient[]>([]);
+  const [summary, setSummary] = React.useState<TherapistDashboardSummary | null>(null);
+  const [appointments, setAppointments] = React.useState<AppointmentSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
+    if (!user?.id) return;
     let cancelled = false;
     setLoading(true);
-    listChannels()
-      .then(async (chs) => {
+    const weekStart = startOfWeek(now, { weekStartsOn: 1 });
+    const fromIso = new Date(weekStart).toISOString();
+    const toIso = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    Promise.allSettled([
+      getTherapistDashboardSummary(user.id),
+      listTherapistAppointments(user.id, {
+        status: ["REQUESTED", "UPCOMING", "IN_PROGRESS"],
+        from: fromIso,
+        to: toIso,
+        page: 0,
+        size: 100,
+        sort: "startDatetime,asc",
+      }),
+    ])
+      .then(([summaryR, appointmentsR]) => {
         if (cancelled) return;
-        setChannels(chs ?? []);
-        const upcomingResults = await Promise.allSettled(
-          (chs ?? []).map((c) =>
-            getUpcomingAppointment(c.counterpartProfileId).then((a) => ({
-              ...a,
-              patientName: c.counterpartDisplayName ?? c.counterpartProfilename,
-            })),
-          ),
-        );
-        const historyResults = await Promise.allSettled(
-          (chs ?? []).map((c) =>
-            getAppointmentHistory(c.counterpartProfileId).then((list) =>
-              list.map((a) => ({
-                ...a,
-                patientName: c.counterpartDisplayName ?? c.counterpartProfilename,
-              })),
-            ),
-          ),
-        );
-        if (cancelled) return;
-        setUpcoming(
-          upcomingResults
-            .filter((r): r is PromiseFulfilledResult<AppointmentWithPatient> => r.status === "fulfilled")
-            .map((r) => r.value),
-        );
-        setHistory(
-          historyResults
-            .filter((r): r is PromiseFulfilledResult<AppointmentWithPatient[]> => r.status === "fulfilled")
-            .flatMap((r) => r.value),
-        );
-      })
-      .catch((err) => {
-        if (err instanceof ApiError) {
-          console.warn("Dashboard load failed", err.status, err.message);
+        if (summaryR.status === "fulfilled") setSummary(summaryR.value);
+        if (appointmentsR.status === "fulfilled")
+          setAppointments(appointmentsR.value.content ?? []);
+        if (summaryR.status === "rejected" && summaryR.reason instanceof ApiError) {
+          console.warn("dashboard summary load failed", summaryR.reason.status);
         }
       })
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [user?.id]);
+  }, [user?.id, now]);
 
-  const todays = upcoming
+  const todays = appointments
     .filter((a) => isSameDay(parseISO(a.startDatetime), now) && a.status !== "CANCELLED")
     .sort((a, b) => a.startDatetime.localeCompare(b.startDatetime));
 
@@ -100,17 +80,9 @@ export function DashboardPage() {
     return d;
   });
   const apptsByDay = (d: Date) =>
-    upcoming.filter((a) => isSameDay(parseISO(a.startDatetime), d) && a.status !== "CANCELLED")
-      .length;
-
-  const pendingBookings = upcoming.filter((a) => a.status === "REQUESTED").length;
-  const recentGrants = channels.filter((c) => c.unreadCount > 0).slice(0, 2);
-
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const completedThisMonth = history.filter(
-    (a) => a.status === "COMPLETED" && isAfter(parseISO(a.startDatetime), monthStart),
-  ).length;
-  const activePatients = channels.length;
+    appointments.filter(
+      (a) => isSameDay(parseISO(a.startDatetime), d) && a.status !== "CANCELLED",
+    ).length;
 
   return (
     <div className="space-y-6">
@@ -130,10 +102,33 @@ export function DashboardPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <Kpi icon={Users} label="Active patients" value={activePatients} />
-        <Kpi icon={CalendarCheck} label="Sessions this month" value={completedThisMonth} />
-        <Kpi icon={Star} label="Avg rating" value={"—"} />
-        <Kpi icon={ClipboardList} label="Draft notes" value={"—"} accent="warning" />
+        <Kpi
+          icon={Users}
+          label="Active patients"
+          value={summary?.activePatientCount ?? (loading ? "…" : 0)}
+        />
+        <Kpi
+          icon={CalendarCheck}
+          label="Sessions this month"
+          value={summary?.completedThisMonth ?? (loading ? "…" : 0)}
+        />
+        <Kpi
+          icon={Star}
+          label="Avg rating"
+          value={
+            summary?.averageRating != null
+              ? `${summary.averageRating.toFixed(2)} / 5`
+              : loading
+                ? "…"
+                : "—"
+          }
+        />
+        <Kpi
+          icon={ClipboardList}
+          label="Draft notes"
+          value={summary?.draftNoteCount ?? (loading ? "…" : 0)}
+          accent="warning"
+        />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">
@@ -161,9 +156,12 @@ export function DashboardPage() {
             {!loading &&
               todays.map((a) => {
                 const start = parseISO(a.startDatetime);
+                const end = a.endDatetime
+                  ? parseISO(a.endDatetime)
+                  : new Date(start.getTime() + 60 * 60 * 1000);
                 const inWindow = isWithinInterval(now, {
                   start: new Date(start.getTime() - TEN_MINUTES_MS),
-                  end: new Date(start.getTime() + 60 * 60 * 1000),
+                  end,
                 });
                 return (
                   <div
@@ -172,12 +170,14 @@ export function DashboardPage() {
                   >
                     <div className="flex items-center gap-3">
                       <Avatar>
-                        <AvatarFallback>{initials(a.patientName)}</AvatarFallback>
+                        <AvatarFallback>{initials(a.patientName ?? "?")}</AvatarFallback>
                       </Avatar>
                       <div>
-                        <p className="text-sm font-medium">{a.patientName}</p>
+                        <p className="text-sm font-medium">
+                          {a.patientName ?? a.profileId.slice(0, 8)}
+                        </p>
                         <p className="text-xs text-muted-foreground">
-                          {format(start, "HH:mm")} · {a.therapistSpecialization ?? "Session"}
+                          {format(start, "HH:mm")} · {a.reason ?? "Session"}
                         </p>
                       </div>
                     </div>
@@ -189,7 +189,7 @@ export function DashboardPage() {
                           </>
                         ) : (
                           <>
-                            <MessageCircle className="mr-1 h-3 w-3" /> Chat
+                            <MessageCircle className="mr-1 h-3 w-3" /> Text
                           </>
                         )}
                       </Badge>
@@ -250,15 +250,15 @@ export function DashboardPage() {
           <CardContent className="space-y-3">
             <Action
               icon={MessagesSquare}
-              title={`${pendingBookings} booking${pendingBookings === 1 ? "" : "s"} awaiting confirmation`}
+              title={`${summary?.pendingBookingCount ?? 0} booking${summary?.pendingBookingCount === 1 ? "" : "s"} awaiting confirmation`}
               cta="Review"
               to="/appointments?tab=upcoming"
             />
             <Action
-              icon={Users}
-              title={`${recentGrants.length} channel${recentGrants.length === 1 ? "" : "s"} with unread messages`}
+              icon={ClipboardList}
+              title={`${summary?.draftNoteCount ?? 0} draft note${summary?.draftNoteCount === 1 ? "" : "s"} to finish`}
               cta="Open"
-              to="/messages"
+              to="/clinical-notes?status=draft"
             />
           </CardContent>
         </Card>
@@ -272,22 +272,19 @@ export function DashboardPage() {
             <CardDescription>Patients with concerning recent tracking data.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {channels.filter((c) => c.moodAlert).length === 0 && (
+            {(summary?.moodAlertCount ?? 0) === 0 ? (
               <p className="text-sm text-muted-foreground">No active alerts.</p>
+            ) : (
+              <div className="rounded-md border-l-4 border-warning bg-warning/5 p-3">
+                <p className="text-sm font-medium">
+                  {summary?.moodAlertCount} patient
+                  {summary?.moodAlertCount === 1 ? "" : "s"} flagged for mood-related concerns.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Open the patients list to triage.
+                </p>
+              </div>
             )}
-            {channels
-              .filter((c) => c.moodAlert)
-              .map((c) => (
-                <div
-                  key={c.channelId}
-                  className="rounded-md border-l-4 border-warning bg-warning/5 p-3"
-                >
-                  <p className="text-sm font-medium">
-                    {c.counterpartDisplayName ?? c.counterpartProfilename}
-                  </p>
-                  <p className="text-xs text-muted-foreground">{c.moodAlert}</p>
-                </div>
-              ))}
           </CardContent>
         </Card>
       </div>
