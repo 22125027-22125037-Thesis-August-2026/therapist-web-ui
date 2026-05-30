@@ -69,14 +69,12 @@ export interface DashboardSummary {
 
 export function listDiary(profileId: string) {
   return apiFetch<DiaryEntryResponse[]>(`/api/v1/tracking/diaries/${profileId}`, {
-    service: "tracking",
     method: "GET",
   });
 }
 
 export function listFood(profileId: string, params?: { startDate?: string; endDate?: string }) {
   return apiFetch<FoodLogResponse[]>(`/api/v1/tracking/foods/${profileId}`, {
-    service: "tracking",
     method: "GET",
     query: { startDate: params?.startDate, endDate: params?.endDate },
   });
@@ -84,38 +82,29 @@ export function listFood(profileId: string, params?: { startDate?: string; endDa
 
 export function listMood(profileId: string) {
   return apiFetch<MoodLogResponse[]>(`/api/v1/tracking/moods/${profileId}`, {
-    service: "tracking",
     method: "GET",
   });
 }
 
 export function listSleep(profileId: string) {
   return apiFetch<SleepLogResponse[]>(`/api/v1/tracking/sleeps/${profileId}`, {
-    service: "tracking",
     method: "GET",
   });
 }
 
 export function listStreaks() {
-  return apiFetch<StreakResponse[]>("/api/v1/tracking/streaks/", {
-    service: "tracking",
-    method: "GET",
-  });
+  return apiFetch<StreakResponse[]>("/api/v1/tracking/streaks/", { method: "GET" });
 }
 
 export function getDashboardSummary(profileId: string) {
-  return apiFetch<DashboardSummary>(`/internal/v1/dashboard/${profileId}/summary`, {
-    service: "tracking",
+  return apiFetch<DashboardSummary>(`/api/v1/dashboard/${profileId}/summary`, {
     method: "GET",
-    auth: false,
   });
 }
 
 export function getTrackingContext(profileId: string, days = 7) {
-  return apiFetch<string>(`/internal/v1/tracking/context/${profileId}`, {
-    service: "tracking",
+  return apiFetch<string>(`/api/v1/tracking/context/${profileId}`, {
     method: "GET",
     query: { days },
-    auth: false,
   });
 }

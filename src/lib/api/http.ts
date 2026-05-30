@@ -1,4 +1,4 @@
-import { API_BASE_URLS, AUTH_TOKEN_KEY, type ServiceKey } from "./config";
+import { API_BASE_URL, AUTH_TOKEN_KEY } from "./config";
 
 export class ApiError extends Error {
   status: number;
@@ -13,13 +13,12 @@ export class ApiError extends Error {
 interface RequestOptions extends Omit<RequestInit, "body"> {
   body?: unknown;
   query?: Record<string, string | number | boolean | undefined | null>;
-  service: ServiceKey;
   isMultipart?: boolean;
   auth?: boolean;
 }
 
-function buildUrl(service: ServiceKey, path: string, query?: RequestOptions["query"]): string {
-  const base = API_BASE_URLS[service].replace(/\/$/, "");
+function buildUrl(path: string, query?: RequestOptions["query"]): string {
+  const base = API_BASE_URL.replace(/\/$/, "");
   const url = new URL(`${base}${path.startsWith("/") ? "" : "/"}${path}`);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
@@ -38,9 +37,9 @@ export function getStoredToken(): string | null {
   }
 }
 
-export async function apiFetch<T>(path: string, opts: RequestOptions): Promise<T> {
-  const { service, body, query, isMultipart, auth = true, headers, ...rest } = opts;
-  const url = buildUrl(service, path, query);
+export async function apiFetch<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+  const { body, query, isMultipart, auth = true, headers, ...rest } = opts;
+  const url = buildUrl(path, query);
 
   const finalHeaders: Record<string, string> = {
     Accept: "application/json",
@@ -67,8 +66,12 @@ export async function apiFetch<T>(path: string, opts: RequestOptions): Promise<T
   if (res.status === 204) return undefined as T;
 
   const contentType = res.headers.get("content-type") ?? "";
-  const isJson = contentType.includes("application/json") || contentType.includes("application/problem+json");
-  const payload = isJson ? await res.json().catch(() => null) : await res.text().catch(() => "");
+  const isJson =
+    contentType.includes("application/json") ||
+    contentType.includes("application/problem+json");
+  const payload = isJson
+    ? await res.json().catch(() => null)
+    : await res.text().catch(() => "");
 
   if (!res.ok) {
     const message =

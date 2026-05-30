@@ -54,63 +54,54 @@ export interface PageEnvelope<T> {
 }
 
 export function createFriendRequest(receiverEmail: string) {
-  return apiFetch<void>("/api/v1/friends/requests", {
-    service: "social",
+  return apiFetch<void>("/api/v1/social/friends/requests", {
     method: "POST",
     body: { receiverEmail },
   });
 }
 
 export function cancelFriendRequest(requestId: string) {
-  return apiFetch<void>(`/api/v1/friends/requests/${requestId}`, {
-    service: "social",
+  return apiFetch<void>(`/api/v1/social/friends/requests/${requestId}`, {
     method: "DELETE",
   });
 }
 
 export function acceptFriendRequest(requestId: string) {
-  return apiFetch<void>(`/api/v1/friends/requests/${requestId}/accept`, {
-    service: "social",
+  return apiFetch<void>(`/api/v1/social/friends/requests/${requestId}/accept`, {
     method: "POST",
   });
 }
 
 export function rejectFriendRequest(requestId: string) {
-  return apiFetch<void>(`/api/v1/friends/requests/${requestId}/reject`, {
-    service: "social",
+  return apiFetch<void>(`/api/v1/social/friends/requests/${requestId}/reject`, {
     method: "POST",
   });
 }
 
 export function listIncomingFriendRequests(page = 0, size = 20) {
-  return apiFetch<PageEnvelope<FriendRequestItem>>("/api/v1/friends/requests/incoming", {
-    service: "social",
-    method: "GET",
-    query: { page, size },
-  });
+  return apiFetch<PageEnvelope<FriendRequestItem>>(
+    "/api/v1/social/friends/requests/incoming",
+    { method: "GET", query: { page, size } },
+  );
 }
 
 export function listOutgoingFriendRequests(page = 0, size = 20) {
-  return apiFetch<PageEnvelope<FriendRequestItem>>("/api/v1/friends/requests/outgoing", {
-    service: "social",
-    method: "GET",
-    query: { page, size },
-  });
+  return apiFetch<PageEnvelope<FriendRequestItem>>(
+    "/api/v1/social/friends/requests/outgoing",
+    { method: "GET", query: { page, size } },
+  );
 }
 
 export function listFriends() {
-  return apiFetch<FriendItem[]>("/api/v1/friends", { service: "social", method: "GET" });
+  return apiFetch<FriendItem[]>("/api/v1/social/friends", { method: "GET" });
 }
 
 export function unfriend(profileId: string) {
-  return apiFetch<void>(`/api/v1/friends/${profileId}`, { service: "social", method: "DELETE" });
+  return apiFetch<void>(`/api/v1/social/friends/${profileId}`, { method: "DELETE" });
 }
 
 export function listChannels() {
-  return apiFetch<ChannelItem[]>("/api/v1/chats/channels", {
-    service: "social",
-    method: "GET",
-  });
+  return apiFetch<ChannelItem[]>("/api/v1/social/chats/channels", { method: "GET" });
 }
 
 export function createChannel(payload: {
@@ -118,8 +109,7 @@ export function createChannel(payload: {
   referenceId?: string;
   participantIds: string[];
 }) {
-  return apiFetch<ChannelItem>("/api/v1/chats/channels", {
-    service: "social",
+  return apiFetch<ChannelItem>("/api/v1/social/chats/channels", {
     method: "POST",
     body: payload,
   });
@@ -127,14 +117,14 @@ export function createChannel(payload: {
 
 export function listChannelMessages(channelId: string, page = 0, size = 20) {
   return apiFetch<PageEnvelope<ChannelMessage>>(
-    `/api/v1/chats/channels/${channelId}/messages`,
-    { service: "social", method: "GET", query: { page, size } },
+    `/api/v1/social/chats/channels/${channelId}/messages`,
+    { method: "GET", query: { page, size } },
   );
 }
 
 export function markMessageRead(channelId: string, messageId: string) {
   return apiFetch<void>(
-    `/api/v1/chats/channels/${channelId}/messages/${messageId}/read`,
-    { service: "social", method: "PATCH" },
+    `/api/v1/social/chats/channels/${channelId}/messages/${messageId}/read`,
+    { method: "PATCH" },
   );
 }
