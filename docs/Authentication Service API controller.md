@@ -4,6 +4,8 @@
 Base paths:
 - /api/v1/auth
 - /api/v1/auth/grants
+- /api/v1/patients
+- /admin/v1/therapists
 - /internal/v1
 
 Auth: endpoints that use `SecurityContextHolder` or `SecurityUtils` require a valid Bearer token.
@@ -36,6 +38,37 @@ Auth: endpoints that use `SecurityContextHolder` or `SecurityUtils` require a va
   - fullName (string)
   - avatarUrl (string)
   - phoneNumber (string)
+  - specialization (string) — therapist only, ignored for other roles
+  - bio (string) — therapist only
+  - yearsOfExperience (integer) — therapist only
+  - consultationFee (number) — therapist only
+  - languages (string[]) — therapist only
+
+- ChangePasswordRequest
+  - currentPassword (string, required)
+  - newPassword (string, required, min length 8, must differ from current)
+
+- LicenseResponse
+  - profileId (uuid)
+  - status (enum): PENDING_VERIFICATION | VERIFIED | REJECTED | EXPIRED
+  - licenseNumber (string)
+  - licenseAuthority (string)
+  - licenseExpiresAt (string, date)
+  - documentUrl (string) — presigned URL to the uploaded document
+  - verified (boolean) — legacy convenience flag, true iff status == VERIFIED
+
+- PatientDetailResponse
+  - profileId (uuid)
+  - fullName (string)
+  - email (string)
+  - role (string)
+  - avatarUrl (string)
+  - dateOfBirth (string, date)
+  - age (integer) — derived from dateOfBirth
+  - gender (string)
+  - phoneNumber (string)
+  - school (string) — teen profiles only
+  - emergencyContact (string) — teen profiles only
 
 - AuthResponse
   - token (string)
@@ -52,6 +85,16 @@ Auth: endpoints that use `SecurityContextHolder` or `SecurityUtils` require a va
   - role (string)
   - creditsBalance (integer)
   - avatarUrl (string)
+  - Therapist-only fields (omitted/null for other roles):
+    - specialization (string)
+    - bio (string)
+    - yearsOfExperience (integer)
+    - consultationFee (number)
+    - languages (string[])
+    - licenseNumber (string)
+    - licenseAuthority (string)
+    - licenseExpiresAt (string, date)
+    - licenseStatus (enum): PENDING_VERIFICATION | VERIFIED | REJECTED | EXPIRED
 
 - GrantAccessRequest
   - granteeProfileId (uuid, required)
@@ -110,6 +153,54 @@ Auth: endpoints that use `SecurityContextHolder` or `SecurityUtils` require a va
   - Auth: Bearer token
   - Response: 200 OK, "Logged out successfully"
   - Errors: 400 "No token found"
+
+- POST /api/v1/auth/password/change
+  - Auth: Bearer token
+  - Body: ChangePasswordRequest
+  - Response: 200 OK, { "message": "Password changed successfully" }
+  - Errors: 400 with { "error": "..." } when the current password is wrong,
+    the new password is too short, or it equals the current one
+
+### Therapist license (Auth)
+The current profile must be a THERAPIST.
+
+- GET /api/v1/auth/license
+  - Auth: Bearer token
+  - Response: 200 OK, LicenseResponse
+  - Errors: 400 if the profile is not a therapist
+
+- POST /api/v1/auth/license/renew
+  - Auth: Bearer token
+  - Content-Type: multipart/form-data
+  - Form fields (all optional; submit what changed):
+    - document (binary) — PDF/JPEG/PNG, max 10MB
+    - licenseNumber (string)
+    - licenseAuthority (string)
+    - licenseExpiresAt (string, date, ISO yyyy-MM-dd)
+  - Effect: stores the document and resets status to PENDING_VERIFICATION
+  - Response: 200 OK, LicenseResponse
+  - Errors: 400 with { "error": "..." } for invalid document type/size
+
+### Admin — therapists
+The {id} path variable is the therapist's profile id. Caller must be ADMIN.
+
+- POST /admin/v1/therapists/{id}/license/verify
+  - Auth: Bearer token (ADMIN)
+  - Effect: status -> VERIFIED
+  - Response: 200 OK, LicenseResponse
+
+- POST /admin/v1/therapists/{id}/license/reject
+  - Auth: Bearer token (ADMIN)
+  - Effect: status -> REJECTED
+  - Response: 200 OK, LicenseResponse
+
+### Patients (therapist-facing)
+- GET /api/v1/patients/{profileId}
+  - Auth: Bearer token
+  - Authorization: ADMIN, the profile owner, or a caller holding an ACTIVE
+    data-access grant from the patient (same rule as reading tracking data)
+  - Response: 200 OK, PatientDetailResponse
+  - Errors: 403 if not authorized, 404 if profile not found
 
 ### Data Access Grants (Auth)
 All responses are wrapped in ApiResponse.
