@@ -63,8 +63,11 @@ function mapLicenseStatusToTherapistStatus(
 }
 
 function mapUserToTherapist(u: UserResponse, prev?: TherapistProfile | null): TherapistProfile {
+  // `/auth/me` returns user_id in `id`, but every therapist/social/notification
+  // endpoint is keyed by profile_id. Prefer the profileId stored at login.
+  const profileId = getStoredProfileId() ?? u.id;
   return {
-    id: u.id,
+    id: profileId,
     fullName: u.fullName,
     email: u.email,
     phone: u.phoneNumber ?? prev?.phone ?? "",
