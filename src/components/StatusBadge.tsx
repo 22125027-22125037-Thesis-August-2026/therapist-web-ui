@@ -11,7 +11,7 @@ const appointmentMap: Record<AppointmentStatus, { label: string; variant: any }>
 };
 
 export function AppointmentStatusBadge({ status }: { status: AppointmentStatus }) {
-  const m = appointmentMap[status];
+  const m = appointmentMap[status] ?? { label: String(status ?? "Unknown"), variant: "muted" };
   return <Badge variant={m.variant}>{m.label}</Badge>;
 }
 
@@ -23,6 +23,6 @@ const riskMap: Record<RiskLevel, { label: string; variant: any }> = {
 };
 
 export function RiskBadge({ level }: { level: RiskLevel }) {
-  const m = riskMap[level];
+  const m = riskMap[level] ?? riskMap.NONE;
   return <Badge variant={m.variant}>{m.label}</Badge>;
 }

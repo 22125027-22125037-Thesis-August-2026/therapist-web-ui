@@ -121,7 +121,7 @@ export function PatientProfilePage() {
         );
         setNotes(notesPage.content ?? []);
         if (tagsR) setTags(tagsR.tags);
-        if (riskR) setRiskLevel(riskR.riskLevel);
+        if (riskR?.riskLevel) setRiskLevel(riskR.riskLevel);
         if (matchingR) setMatchingPrefs(matchingR);
       } catch (e: any) {
         if (!cancelled) setError(e?.message ?? "Failed to load patient");
