@@ -146,7 +146,7 @@ export interface AssignedTherapistResponse {
 
 export interface TherapistPatientRosterItem {
   profileId: string;
-  patientName: string;
+  patientName?: string;
   assignmentStatus: "ACTIVE" | "INACTIVE";
   assignedAt: string;
   riskLevel?: "NONE" | "LOW" | "MEDIUM" | "HIGH";

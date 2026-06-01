@@ -43,7 +43,7 @@ export function PatientsListPage() {
   const filtered = rows.filter((p) => {
     if (statusFilter !== "ALL" && p.assignmentStatus !== statusFilter) return false;
     if (tag && !(p.tags ?? []).includes(tag)) return false;
-    if (search && !p.patientName.toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !(p.patientName ?? "").toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
@@ -127,7 +127,7 @@ export function PatientsListPage() {
                             to={`/patients/${p.profileId}`}
                             className="font-medium hover:underline"
                           >
-                            {p.patientName}
+                            {p.patientName ?? p.profileId.slice(0, 8)}
                           </Link>
                           {(p.tags ?? []).length > 0 && (
                             <div className="flex gap-1 pt-0.5">
