@@ -22,7 +22,7 @@ import {
   Line,
   CartesianGrid,
 } from "recharts";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -49,11 +49,9 @@ import { getGrantStatus, getPatientDetail, type PatientDetailResponse } from "@/
 import {
   listDiary,
   listFood,
-  listMood,
   listSleep,
   type DiaryEntryResponse,
   type FoodLogResponse,
-  type MoodLogResponse,
   type SleepLogResponse,
 } from "@/lib/api/tracking";
 import { ApiError } from "@/lib/api/http";
@@ -746,48 +744,105 @@ function SleepTab({ patientId }: { patientId: string }) {
   );
 }
 
+// Diary mood tags mapped onto a 1–5 positivity scale for charting (higher = more positive).
+const MOOD_SCORE: Record<string, number> = {
+  TERRIBLE: 1,
+  BAD: 2,
+  ANXIOUS: 2,
+  NEUTRAL: 3,
+  GOOD: 4,
+  HAPPY: 4,
+  EXCITED: 4,
+  EXCELLENT: 5,
+};
+
+const MOOD_SCALE_LABEL: Record<number, string> = {
+  1: "Terrible",
+  2: "Bad",
+  3: "Neutral",
+  4: "Good",
+  5: "Excellent",
+};
+
+function moodScore(tag?: string): number | null {
+  if (!tag) return null;
+  return MOOD_SCORE[tag.trim().toUpperCase()] ?? null;
+}
+
+function MoodTooltip({ active, payload }: any) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0].payload as { day: string; score: number; mood: string };
+  return (
+    <div className="rounded-md border bg-background p-2 text-xs shadow">
+      <p className="font-medium">{p.day}</p>
+      <p className="text-muted-foreground">
+        {MOOD_SCALE_LABEL[p.score]} · {p.mood}
+      </p>
+    </div>
+  );
+}
+
 function MoodTab({ patientId }: { patientId: string }) {
-  const [moods, setMoods] = React.useState<MoodLogResponse[]>([]);
+  const [entries, setEntries] = React.useState<DiaryEntryResponse[]>([]);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
     let cancelled = false;
-    listMood(patientId)
-      .then((data) => !cancelled && setMoods(data))
-      .catch(() => !cancelled && setMoods([]))
+    listDiary(patientId)
+      .then((data) => !cancelled && setEntries(data))
+      .catch(() => !cancelled && setEntries([]))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
   }, [patientId]);
 
+  // Score each diary entry's mood and keep the highest per day, then plot the daily line.
+  const chartData = React.useMemo(() => {
+    const bestByDay = new Map<string, { score: number; mood: string }>();
+    for (const e of entries) {
+      const score = moodScore(e.moodTag);
+      if (score == null) continue;
+      const day = (e.entryDate ?? e.createdAt).slice(0, 10);
+      const prev = bestByDay.get(day);
+      if (!prev || score > prev.score) {
+        bestByDay.set(day, { score, mood: e.moodTag!.trim().toUpperCase() });
+      }
+    }
+    return [...bestByDay.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([day, v]) => ({ day: day.slice(5), score: v.score, mood: v.mood }));
+  }, [entries]);
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Mood check-ins</CardTitle>
+        <CardTitle>Mood trend</CardTitle>
+        <CardDescription>Highest diary mood per day, scored 1 (Terrible) – 5 (Excellent).</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-2 text-sm">
-        {loading && (
-          <div className="flex items-center justify-center py-4 text-muted-foreground">
+      <CardContent className="h-72">
+        {loading ? (
+          <div className="flex h-full items-center justify-center text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
           </div>
+        ) : chartData.length === 0 ? (
+          <p className="text-muted-foreground">No diary moods to chart.</p>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="day" />
+              <YAxis
+                domain={[1, 5]}
+                ticks={[1, 2, 3, 4, 5]}
+                width={72}
+                tickFormatter={(v: number) => MOOD_SCALE_LABEL[v] ?? String(v)}
+              />
+              <Tooltip content={<MoodTooltip />} />
+              <Line dataKey="score" stroke="hsl(var(--primary))" strokeWidth={2} dot connectNulls />
+            </LineChart>
+          </ResponsiveContainer>
         )}
-        {!loading && moods.length === 0 && (
-          <p className="text-muted-foreground">No mood check-ins.</p>
-        )}
-        {[...moods]
-          .sort((a, b) => b.logDate.localeCompare(a.logDate))
-          .map((m) => (
-            <div key={m.id} className="flex items-center justify-between rounded-md border p-2">
-              <div>
-                <p className="font-medium">Positivity {m.positivityScore}/10</p>
-                {m.note && <p className="text-xs text-muted-foreground">{m.note}</p>}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {format(parseISO(m.logDate), "PP HH:mm")}
-              </p>
-            </div>
-          ))}
       </CardContent>
     </Card>
   );

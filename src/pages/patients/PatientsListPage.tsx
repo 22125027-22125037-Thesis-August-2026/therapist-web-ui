@@ -13,6 +13,7 @@ import {
   listTherapistPatients,
   type TherapistPatientRosterItem,
 } from "@/lib/api/therapist";
+import { getPatientDetail } from "@/lib/api/auth";
 
 export function PatientsListPage() {
   const { user } = useAuth();
@@ -20,6 +21,9 @@ export function PatientsListPage() {
   const [statusFilter, setStatusFilter] = React.useState<"ALL" | "ACTIVE" | "INACTIVE">("ALL");
   const [tag, setTag] = React.useState("");
   const [rows, setRows] = React.useState<TherapistPatientRosterItem[]>([]);
+  // Names resolved from the patient-profile endpoint for rows the roster left blank
+  // (the roster only knows a name when the patient has a booked appointment).
+  const [names, setNames] = React.useState<Record<string, string>>({});
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -28,13 +32,34 @@ export function PatientsListPage() {
     let cancelled = false;
     setLoading(true);
     listTherapistPatients(user.id)
-      .then((list) => !cancelled && setRows(list ?? []))
+      .then((list) => {
+        if (cancelled) return;
+        const rosterRows = list ?? [];
+        setRows(rosterRows);
+        // Backfill missing names via the profile endpoint (accessible because the
+        // therapist is assigned to these patients). Failures fall back to the id.
+        const missing = rosterRows.filter((p) => !p.patientName).map((p) => p.profileId);
+        missing.forEach((profileId) => {
+          getPatientDetail(profileId)
+            .then((d) => {
+              if (!cancelled && d?.fullName) {
+                setNames((prev) => ({ ...prev, [profileId]: d.fullName }));
+              }
+            })
+            .catch(() => {});
+        });
+      })
       .catch((e) => !cancelled && setError(e?.message ?? "Failed to load patients"))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
   }, [user?.id]);
+
+  const nameFor = React.useCallback(
+    (p: TherapistPatientRosterItem) => p.patientName ?? names[p.profileId] ?? p.profileId.slice(0, 8),
+    [names],
+  );
 
   const allTags = Array.from(
     new Set(rows.flatMap((p) => p.tags ?? [])),
@@ -43,7 +68,7 @@ export function PatientsListPage() {
   const filtered = rows.filter((p) => {
     if (statusFilter !== "ALL" && p.assignmentStatus !== statusFilter) return false;
     if (tag && !(p.tags ?? []).includes(tag)) return false;
-    if (search && !(p.patientName ?? "").toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !nameFor(p).toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
@@ -120,14 +145,14 @@ export function PatientsListPage() {
                     <td className="p-3">
                       <div className="flex items-center gap-3">
                         <Avatar>
-                          <AvatarFallback>{initials(p.patientName)}</AvatarFallback>
+                          <AvatarFallback>{initials(nameFor(p))}</AvatarFallback>
                         </Avatar>
                         <div>
                           <Link
                             to={`/patients/${p.profileId}`}
                             className="font-medium hover:underline"
                           >
-                            {p.patientName ?? p.profileId.slice(0, 8)}
+                            {nameFor(p)}
                           </Link>
                           {(p.tags ?? []).length > 0 && (
                             <div className="flex gap-1 pt-0.5">
