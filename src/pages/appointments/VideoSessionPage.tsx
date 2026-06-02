@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
-import { ArrowLeft, Loader2, NotebookPen, PhoneOff } from "lucide-react";
+import { ArrowLeft, Loader2, NotebookPen, PhoneOff, Video } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -10,20 +10,32 @@ import {
   getAppointmentDetail,
   joinSession,
   type AppointmentDetail,
-  type JoinSessionResponse,
 } from "@/lib/api/therapist";
 import { listDiary, type DiaryEntryResponse } from "@/lib/api/tracking";
+
+const JITSI_SERVER_URL = "https://meet.jit.si";
+
+// Mirror the mobile app's room naming: `umatter-<appointmentId>`, stripped of
+// anything Jitsi can't put in a room URL.
+const buildMeetingUrl = (appointmentId: string): string => {
+  const room = `umatter-${appointmentId}`
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-zA-Z0-9\-_]/g, "");
+  return `${JITSI_SERVER_URL}/${encodeURIComponent(room)}`;
+};
 
 export function VideoSessionPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const [appt, setAppt] = React.useState<AppointmentDetail | null>(null);
-  const [join, setJoin] = React.useState<JoinSessionResponse | null>(null);
   const [diary, setDiary] = React.useState<DiaryEntryResponse[]>([]);
   const [scratch, setScratch] = React.useState("");
   const [saved, setSaved] = React.useState<Date | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [joining, setJoining] = React.useState(false);
+  const [joinError, setJoinError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!scratch) return;
@@ -37,13 +49,9 @@ export function VideoSessionPage() {
     setLoading(true);
     (async () => {
       try {
-        const [a, joinRes] = await Promise.all([
-          getAppointmentDetail(id),
-          joinSession(id),
-        ]);
+        const a = await getAppointmentDetail(id);
         if (cancelled) return;
         setAppt(a);
-        setJoin(joinRes);
         try {
           const d = await listDiary(a.profileId);
           if (!cancelled) setDiary(d.slice(0, 5));
@@ -79,7 +87,21 @@ export function VideoSessionPage() {
 
   if (!appt) return <p className="p-6">Appointment not found.</p>;
 
-  const meetingUrl = join?.meetingUrl;
+  const handleJoin = async () => {
+    if (!id || joining) return;
+    setJoining(true);
+    setJoinError(null);
+    try {
+      // Send the join request; we only care that the backend returns 200 OK
+      // (apiFetch throws on any non-2xx), not about the response payload.
+      await joinSession(id);
+      window.open(buildMeetingUrl(id), "_blank", "noopener,noreferrer");
+    } catch (e: any) {
+      setJoinError(e?.message ?? "Failed to join the meeting");
+    } finally {
+      setJoining(false);
+    }
+  };
 
   return (
     <div className="flex h-[calc(100vh-3rem)] flex-col">
@@ -108,16 +130,17 @@ export function VideoSessionPage() {
 
       <div className="flex flex-1 overflow-hidden">
         <div className="grid flex-1 place-items-center bg-black/90 text-white">
-          {meetingUrl ? (
-            <iframe
-              title="Video session"
-              src={meetingUrl}
-              allow="camera; microphone; fullscreen; display-capture; autoplay"
-              className="h-full w-full border-0"
-            />
-          ) : (
-            <p className="text-sm text-white/70">Waiting for meeting URL…</p>
-          )}
+          <div className="flex flex-col items-center gap-4 px-6 text-center">
+            <Button size="lg" onClick={handleJoin} disabled={joining}>
+              {joining ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Video className="h-4 w-4" />
+              )}
+              Join the Jitsi meeting
+            </Button>
+            {joinError && <p className="text-sm text-destructive">{joinError}</p>}
+          </div>
         </div>
 
         <aside className="w-96 shrink-0 space-y-3 overflow-y-auto scrollbar-thin border-l bg-card p-4">

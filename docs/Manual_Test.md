@@ -75,16 +75,7 @@ therapist confirms, becomes `UPCOMING/CONFIRMED` on both clients.
 | 4 | Mobile | On **ConsultationDetailScreen**, type a reason (e.g. "Feeling anxious before exams"), choose **Video** (or **Chat**), tap confirm. |
 | 5 | Mobile | On **WaitingRoomScreen**, tap **"Xác nhận đặt lịch với chuyên gia"**. |
 | 6 | Mobile | Verify the card now shows status **REQUESTED** + the "awaiting approval" banner. |
-| 7 | Web | Go to **Appointments → Requested** tab (or **Upcoming**). The new request appears with the patient name, mode badge, and `REQUESTED` status. | --> Appointment's data sucessfully retrieved. but failed to retrieve patient's data: Access to fetch at 'http://161.118.252.10:8080/api/v1/patients/e1d0add5-b9c8-57b5-36e6-059991832f17' from origin 'http://161.118.252.10:5173' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: It does not have HTTP ok status. (But other request to Therapist API works? Request URL
-http://161.118.252.10:8080/api/v1/therapist/therapists/aa84aebd-0ec3-38c6-fc8e-8edaf08ba7dc/slots/manage?includeBooked=true&page=0&size=500&sort=startDatetime%2Casc
-Request Method
-GET
-Status Code
-200 OK
-Remote Address
-161.118.252.10:8080
-Referrer Policy
-strict-origin-when-cross-origin)
+| 7 | Web | Go to **Appointments → Requested** tab (or **Upcoming**). 
 | 8 | Web | Open the appointment. The **"Decision required"** card is visible; **Confirm booking** is enabled (because `> 2h` to start). Patient reason is shown. |
 | 9 | Web | Click **Confirm booking**. |
 | 10 | Web | Status badge updates to **CONFIRMED** (server `UPCOMING`); the Decision card disappears. |
