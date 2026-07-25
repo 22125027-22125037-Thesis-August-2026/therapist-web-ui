@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { initials } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
 import {
+  COMPLETED_APPOINTMENT_STATUSES,
   listTherapistAppointments,
   type AppointmentStatusServer,
   type AppointmentSummary,
@@ -24,7 +25,7 @@ const TAB_STATUS_FILTERS: Record<TabKey, AppointmentStatusServer[]> = {
   requested: ["REQUESTED"],
   upcoming: ["REQUESTED", "UPCOMING", "IN_PROGRESS"],
   today: ["REQUESTED", "UPCOMING", "IN_PROGRESS"],
-  past: ["COMPLETED", "NO_SHOW"],
+  past: [...COMPLETED_APPOINTMENT_STATUSES, "NO_SHOW"],
   cancelled: ["CANCELLED"],
 };
 
@@ -32,7 +33,9 @@ const statusUiMap: Record<AppointmentStatusServer, AppointmentStatus> = {
   REQUESTED: "REQUESTED",
   UPCOMING: "CONFIRMED",
   IN_PROGRESS: "IN_PROGRESS",
-  COMPLETED: "COMPLETED",
+  PATIENT_COMPLETE: "PATIENT_COMPLETE",
+  PROFESSIONAL_COMPLETE: "PROFESSIONAL_COMPLETE",
+  OVERALL_COMPLETE: "COMPLETED",
   CANCELLED: "CANCELLED",
   NO_SHOW: "NO_SHOW",
 };

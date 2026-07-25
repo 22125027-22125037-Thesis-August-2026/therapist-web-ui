@@ -32,6 +32,7 @@ import {
   confirmBooking,
   getAppointmentDetail,
   getClinicalNoteByAppointment,
+  isCompletedAppointmentStatus,
   rejectBooking,
   type AppointmentDetail,
   type AppointmentStatusServer,
@@ -48,7 +49,9 @@ const statusUiMap: Record<AppointmentStatusServer, AppointmentStatus> = {
   REQUESTED: "REQUESTED",
   UPCOMING: "CONFIRMED",
   IN_PROGRESS: "IN_PROGRESS",
-  COMPLETED: "COMPLETED",
+  PATIENT_COMPLETE: "PATIENT_COMPLETE",
+  PROFESSIONAL_COMPLETE: "PROFESSIONAL_COMPLETE",
+  OVERALL_COMPLETE: "COMPLETED",
   CANCELLED: "CANCELLED",
   NO_SHOW: "NO_SHOW",
 };
@@ -290,7 +293,7 @@ export function AppointmentDetailPage() {
             </Card>
           )}
 
-          {!isUpcoming && appt.status === "COMPLETED" && (
+          {!isUpcoming && isCompletedAppointmentStatus(appt.status) && (
             <Card>
               <CardHeader>
                 <CardTitle>Post-session</CardTitle>

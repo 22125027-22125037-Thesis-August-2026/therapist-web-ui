@@ -64,9 +64,24 @@ export type AppointmentStatusServer =
   | "REQUESTED"
   | "UPCOMING"
   | "IN_PROGRESS"
-  | "COMPLETED"
+  | "PATIENT_COMPLETE"
+  | "PROFESSIONAL_COMPLETE"
+  | "OVERALL_COMPLETE"
   | "CANCELLED"
   | "NO_SHOW";
+
+// Any of the three completion variants a backend appointment can land in
+// once the session is over (patient reviewed and/or therapist finalized a
+// note). Use this instead of comparing against a single "COMPLETED" value.
+export const COMPLETED_APPOINTMENT_STATUSES: AppointmentStatusServer[] = [
+  "PATIENT_COMPLETE",
+  "PROFESSIONAL_COMPLETE",
+  "OVERALL_COMPLETE",
+];
+
+export function isCompletedAppointmentStatus(status: AppointmentStatusServer): boolean {
+  return (COMPLETED_APPOINTMENT_STATUSES as string[]).includes(status);
+}
 
 export interface AppointmentSummary {
   appointmentId: string;

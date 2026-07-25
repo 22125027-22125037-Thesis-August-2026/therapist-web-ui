@@ -5,6 +5,8 @@ const appointmentMap: Record<AppointmentStatus, { label: string; variant: any }>
   REQUESTED: { label: "Requested", variant: "warning" },
   CONFIRMED: { label: "Confirmed", variant: "default" },
   IN_PROGRESS: { label: "In progress", variant: "success" },
+  PATIENT_COMPLETE: { label: "Needs your note", variant: "warning" },
+  PROFESSIONAL_COMPLETE: { label: "Awaiting patient review", variant: "secondary" },
   COMPLETED: { label: "Completed", variant: "secondary" },
   CANCELLED: { label: "Cancelled", variant: "muted" },
   NO_SHOW: { label: "No show", variant: "destructive" },

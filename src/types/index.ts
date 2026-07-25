@@ -29,6 +29,8 @@ export type AppointmentStatus =
   | "REQUESTED"
   | "CONFIRMED"
   | "IN_PROGRESS"
+  | "PATIENT_COMPLETE"
+  | "PROFESSIONAL_COMPLETE"
   | "COMPLETED"
   | "CANCELLED"
   | "NO_SHOW";

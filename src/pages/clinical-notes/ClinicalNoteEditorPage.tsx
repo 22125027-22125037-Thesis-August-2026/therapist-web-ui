@@ -472,8 +472,9 @@ export function ClinicalNoteEditorPage() {
           <DialogHeader>
             <DialogTitle>Finalize this note?</DialogTitle>
             <DialogDescription>
-              Finalizing locks the note (no further edits) and marks the appointment as
-              COMPLETED if it was still in progress.
+              Finalizing locks the note (no further edits). The appointment moves to
+              "awaiting patient review" if the patient hasn't reviewed yet, or to
+              "completed" if they already have.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

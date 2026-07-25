@@ -38,6 +38,7 @@ import {
   getPatientRiskLevel,
   getPatientTags,
   getUpcomingAppointment,
+  isCompletedAppointmentStatus,
   listClinicalNotes,
   type AppointmentSummary,
   type ClinicalNoteResponse,
@@ -379,7 +380,7 @@ function OverviewTab({
   matchingPrefs: MatchingPreferencesResponse | null;
 }) {
   const lastSession = sessions
-    .filter((s) => s.status === "COMPLETED")
+    .filter((s) => isCompletedAppointmentStatus(s.status))
     .sort((a, b) => b.startDatetime.localeCompare(a.startDatetime))[0];
   const nextSession = sessions
     .filter((s) => s.status === "UPCOMING" || s.status === "REQUESTED")
