@@ -25,7 +25,7 @@ const TAB_STATUS_FILTERS: Record<TabKey, AppointmentStatusServer[]> = {
   requested: ["REQUESTED"],
   upcoming: ["REQUESTED", "UPCOMING", "IN_PROGRESS"],
   today: ["REQUESTED", "UPCOMING", "IN_PROGRESS"],
-  past: [...COMPLETED_APPOINTMENT_STATUSES, "NO_SHOW"],
+  past: COMPLETED_APPOINTMENT_STATUSES,
   cancelled: ["CANCELLED"],
 };
 
@@ -37,7 +37,6 @@ const statusUiMap: Record<AppointmentStatusServer, AppointmentStatus> = {
   PROFESSIONAL_COMPLETE: "PROFESSIONAL_COMPLETE",
   OVERALL_COMPLETE: "COMPLETED",
   CANCELLED: "CANCELLED",
-  NO_SHOW: "NO_SHOW",
 };
 
 export function AppointmentsListPage() {

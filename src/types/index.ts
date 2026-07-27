@@ -32,8 +32,7 @@ export type AppointmentStatus =
   | "PATIENT_COMPLETE"
   | "PROFESSIONAL_COMPLETE"
   | "COMPLETED"
-  | "CANCELLED"
-  | "NO_SHOW";
+  | "CANCELLED";
 
 export interface Appointment {
   id: string;

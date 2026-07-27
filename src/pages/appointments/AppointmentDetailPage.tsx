@@ -53,7 +53,6 @@ const statusUiMap: Record<AppointmentStatusServer, AppointmentStatus> = {
   PROFESSIONAL_COMPLETE: "PROFESSIONAL_COMPLETE",
   OVERALL_COMPLETE: "COMPLETED",
   CANCELLED: "CANCELLED",
-  NO_SHOW: "NO_SHOW",
 };
 
 export function AppointmentDetailPage() {

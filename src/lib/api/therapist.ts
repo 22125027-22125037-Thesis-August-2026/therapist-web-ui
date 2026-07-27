@@ -60,6 +60,10 @@ export interface JoinSessionResponse {
   sdkToken: string;
 }
 
+// Must mirror com.booking.therapist_api.enums.AppointmentStatus exactly --
+// sending a value the backend enum doesn't have (e.g. a stray "NO_SHOW")
+// fails the WHOLE multi-value @RequestParam conversion with a 500, not
+// just that one token.
 export type AppointmentStatusServer =
   | "REQUESTED"
   | "UPCOMING"
@@ -67,8 +71,7 @@ export type AppointmentStatusServer =
   | "PATIENT_COMPLETE"
   | "PROFESSIONAL_COMPLETE"
   | "OVERALL_COMPLETE"
-  | "CANCELLED"
-  | "NO_SHOW";
+  | "CANCELLED";
 
 // Any of the three completion variants a backend appointment can land in
 // once the session is over (patient reviewed and/or therapist finalized a

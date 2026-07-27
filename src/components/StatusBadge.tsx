@@ -9,7 +9,6 @@ const appointmentMap: Record<AppointmentStatus, { label: string; variant: any }>
   PROFESSIONAL_COMPLETE: { label: "Awaiting patient review", variant: "secondary" },
   COMPLETED: { label: "Completed", variant: "secondary" },
   CANCELLED: { label: "Cancelled", variant: "muted" },
-  NO_SHOW: { label: "No show", variant: "destructive" },
 };
 
 export function AppointmentStatusBadge({ status }: { status: AppointmentStatus }) {
